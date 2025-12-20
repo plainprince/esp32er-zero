@@ -1,0 +1,21 @@
+Flipper Zero UI
+Version 1.0
+
+A custom UI framework for Flipper Zero
+devices with ESP32 and various displays.
+
+Features:
+- Lua scripting support
+- Multiple display backends
+- File system browser
+- WiFi connectivity
+- GPIO control
+- IR Remote (NEC, RC5, Sony)
+
+Hardware:
+- ESP32 DevKit V1
+- E-Paper or OLED display
+- Analog joystick
+- IR LED on GPIO 25
+
+Developed with PlatformIO and Arduino.
