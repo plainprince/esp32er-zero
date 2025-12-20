@@ -1,6 +1,7 @@
 
 #include "cpp_app.h"
 #include "ir_remote.h"
+#include "keyboard.h"
 
 #if __has_include("security_config.h")
     #include "security_config.h"
@@ -8,115 +9,227 @@
     #define ENABLE_ADVANCED_IR 0
 #endif
 
-// Universal Remote App
-// Supports common IR protocols: NEC, RC5, Sony
-// Includes preset codes for common TV brands
+// Universal Remote App - Improved navigation for custom codes
+// Navigation structure:
+// - Protocol selection
+// - Brand/Folder selection
+// - For Custom protocol:
+//   - Inside folder: list of codes (as folders) + "New entry" + "Delete folder"
+//   - Inside code: "Run" (hold) + "Delete"
+// - For regular protocols:
+//   - Button list with send on button press
 
 CPP_APP(ir_remote) {
-    int menuIndex = 0;
+    // State variables
+    enum NavLevel { PROTOCOL, BRAND, CODE_LIST, CODE_ACTIONS };
+    NavLevel navLevel = PROTOCOL;
+    
     int protocolIndex = 0;
-    int deviceIndex = 0;
+    int brandIndex = 0;
+    int codeIndex = 0;
+    int actionIndex = 0;
+    
     bool sending = false;
     bool lastButtonState = false;
     unsigned long lastSendTime = 0;
     unsigned long lastRepeatTime = 0;
-    const unsigned long REPEAT_INTERVAL = 80; // Time between IR repeats in ms (faster repeat for better responsiveness)
+    const unsigned long REPEAT_INTERVAL = 110;
     
-    // Protocol names
-    const char* protocols[] = {"NEC", "RC5", "Sony"};
-    const int numProtocols = 3;
+    String currentFolder = "";
+    String currentCodeName = "";
+    const TVCode* currentCode = nullptr;
+    std::vector<const TVCode*> codes;  // Cached codes list for current folder
     
-    // Common TV remote codes (NEC format: address, command)
-    struct TVCode {
-        const char* name;
-        uint32_t address;
-        uint32_t command;
+    // Get available protocols
+    const char** protocols = getIRProtocols();
+    const int numProtocols = getIRProtocolCount();
+    
+    // Get TV codes from file
+    const TVCode* allCodes = getAllTVCodes();
+    const int numCodes = getTVCodeCount();
+    
+    // Helper: Check if current protocol is Custom
+    auto isCustomProtocol = [&]() -> bool {
+        if (protocolIndex >= numProtocols || !protocols[protocolIndex]) return false;
+        return String(protocols[protocolIndex]).equalsIgnoreCase("Custom");
     };
     
-    TVCode tvCodes[] = {
-        {"Power", 0x00FF, 0x00FF},
-        {"Vol+", 0x00FF, 0x00FE},
-        {"Vol-", 0x00FF, 0x00FD},
-        {"Ch+", 0x00FF, 0x00FC},
-        {"Ch-", 0x00FF, 0x00FB},
-        {"Mute", 0x00FF, 0x00FA},
-        {"Input", 0x00FF, 0x00F9},
-        {"Menu", 0x00FF, 0x00F8},
-        {"Up", 0x00FF, 0x00F7},
-        {"Down", 0x00FF, 0x00F6},
-        {"Left", 0x00FF, 0x00F5},
-        {"Right", 0x00FF, 0x00F4},
-        {"OK", 0x00FF, 0x00F3},
-        {"Back", 0x00FF, 0x00F2},
-        {"1", 0x00FF, 0x00E1},
-        {"2", 0x00FF, 0x00E2},
-        {"3", 0x00FF, 0x00E3},
-        {"4", 0x00FF, 0x00E4},
-        {"5", 0x00FF, 0x00E5},
-        {"6", 0x00FF, 0x00E6},
-        {"7", 0x00FF, 0x00E7},
-        {"8", 0x00FF, 0x00E8},
-        {"9", 0x00FF, 0x00E9},
-        {"0", 0x00FF, 0x00EA},
+    // Helper: Get brands for current protocol
+    auto getBrands = [&]() -> std::vector<String> {
+        std::vector<String> brands;
+        if (protocolIndex >= numProtocols || !protocols[protocolIndex]) return brands;
+        
+        String protoName = String(protocols[protocolIndex]);
+        
+        if (protoName.equalsIgnoreCase("Custom")) {
+            return getCustomFolders();
+        }
+        
+        // Regular protocols
+        for (int i = 0; i < numCodes; i++) {
+            if (allCodes[i].protocol.equalsIgnoreCase(protoName)) {
+                bool found = false;
+                for (const auto& b : brands) {
+                    if (b.equalsIgnoreCase(allCodes[i].brand)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    brands.push_back(allCodes[i].brand);
+                }
+            }
+        }
+        return brands;
     };
-    const int numTVCodes = sizeof(tvCodes) / sizeof(tvCodes[0]);
     
+    // Helper: Get codes for brand
+    auto getCodesForBrand = [&](const String& brand) -> std::vector<const TVCode*> {
+        std::vector<const TVCode*> codes;
+        String protoName = String(protocols[protocolIndex]);
+        
+        if (protoName.equalsIgnoreCase("Custom")) {
+            return getCustomCodes(brand.c_str());
+        }
+        
+        for (int i = 0; i < numCodes; i++) {
+            if (allCodes[i].protocol.equalsIgnoreCase(protoName) &&
+                allCodes[i].brand.equalsIgnoreCase(brand)) {
+                codes.push_back(&allCodes[i]);
+            }
+        }
+        return codes;
+    };
+    
+    // Render function
     auto render = [&]() {
         CppApp::clear();
         CppApp::println("IR Remote");
         CppApp::println("");
         
-        char buf[50];
+        char buf[80];
         
-        if (menuIndex == 0) {
+        if (navLevel == PROTOCOL) {
             // Protocol selection
             CppApp::println("Protocol:");
-            snprintf(buf, sizeof(buf), "> %s", protocols[protocolIndex]);
-            CppApp::println(buf);
+            if (protocolIndex < numProtocols && protocols[protocolIndex]) {
+                snprintf(buf, sizeof(buf), "> %s", protocols[protocolIndex]);
+                CppApp::println(buf);
+            }
             CppApp::println("");
             CppApp::println("Up/Down: select");
             CppApp::println("Right: next");
-            CppApp::println("Button: send test");
-        } else if (menuIndex == 1) {
-            // TV remote codes
-            CppApp::println("TV Remote:");
-            int startIdx = deviceIndex;
-            int endIdx = startIdx + 5;
-            if (endIdx > numTVCodes) endIdx = numTVCodes;
+            CppApp::println("Left: exit");
             
-            for (int i = startIdx; i < endIdx; i++) {
-                if (i == deviceIndex) {
-                    snprintf(buf, sizeof(buf), "> %s", tvCodes[i].name);
+        } else if (navLevel == BRAND) {
+            // Brand/Folder selection
+            std::vector<String> brands = getBrands();
+            bool isCustom = isCustomProtocol();
+            int maxIndex = brands.size() + (isCustom ? 1 : 0);
+            
+            if (brandIndex >= maxIndex) brandIndex = maxIndex > 0 ? maxIndex - 1 : 0;
+            
+            CppApp::println(isCustom ? "Folders:" : "Brand:");
+            
+            for (int i = 0; i < (int)brands.size() && i < 5; i++) {
+                if (i == brandIndex) {
+                    snprintf(buf, sizeof(buf), "> %s", brands[i].c_str());
                 } else {
-                    snprintf(buf, sizeof(buf), "  %s", tvCodes[i].name);
+                    snprintf(buf, sizeof(buf), "  %s", brands[i].c_str());
                 }
                 CppApp::println(buf);
             }
             
-            if (numTVCodes > 5) {
-                snprintf(buf, sizeof(buf), "(%d/%d)", deviceIndex + 1, numTVCodes);
+            if (isCustom && brandIndex == (int)brands.size()) {
+                CppApp::println("> Create new");
+            } else if (isCustom) {
+                CppApp::println("  Create new");
+            }
+            
+            if (maxIndex > 5) {
+                snprintf(buf, sizeof(buf), "(%d/%d)", brandIndex + 1, maxIndex);
                 CppApp::println(buf);
             }
             
             CppApp::println("");
-            CppApp::println("Up/Down: navigate");
-            CppApp::println("Button: send");
-        } else if (menuIndex == 2) {
-            // Custom code entry
-            CppApp::println("Custom Code:");
-            CppApp::println("(Not implemented)");
+            CppApp::println("Right: open");
+            CppApp::println("Left: back");
+            
+        } else if (navLevel == CODE_LIST) {
+            // Inside folder/brand - list codes
+            std::vector<const TVCode*> codes = getCodesForBrand(currentFolder);
+            bool isCustom = isCustomProtocol();
+            
+            // For custom: codes + "New entry" + "Delete folder"
+            // For regular: codes only
+            int numOptions = codes.size() + (isCustom ? 2 : 0);
+            if (codeIndex >= numOptions) codeIndex = numOptions > 0 ? numOptions - 1 : 0;
+            
+            CppApp::println(isCustom ? "Codes:" : "Buttons:");
+            
+            for (int i = 0; i < (int)codes.size() && i < 5; i++) {
+                if (i == codeIndex) {
+                    snprintf(buf, sizeof(buf), "> %s", codes[i]->button.c_str());
+                } else {
+                    snprintf(buf, sizeof(buf), "  %s", codes[i]->button.c_str());
+                }
+                CppApp::println(buf);
+            }
+            
+            if (isCustom) {
+                if (codeIndex == (int)codes.size()) {
+                    CppApp::println("> New entry");
+                } else {
+                    CppApp::println("  New entry");
+                }
+                
+                if (codeIndex == (int)codes.size() + 1) {
+                    CppApp::println("> Delete folder");
+                } else {
+                    CppApp::println("  Delete folder");
+                }
+            }
+            
+            if (numOptions > 5) {
+                snprintf(buf, sizeof(buf), "(%d/%d)", codeIndex + 1, numOptions);
+                CppApp::println(buf);
+            }
+            
             CppApp::println("");
-            CppApp::println("Use TV Remote");
-            CppApp::println("for presets");
+            if (isCustom) {
+                CppApp::println("Right: open/action");
+            } else {
+                CppApp::println("Button: send");
+            }
+            CppApp::println("Left: back");
+            
+        } else if (navLevel == CODE_ACTIONS) {
+            // Inside a code - show Run and Delete
+            CppApp::println("Actions:");
+            CppApp::println(currentCodeName.c_str());
+            CppApp::println("");
+            
+            if (actionIndex == 0) {
+                CppApp::println("> Run (hold)");
+            } else {
+                CppApp::println("  Run (hold)");
+            }
+            
+            if (actionIndex == 1) {
+                CppApp::println("> Delete");
+            } else {
+                CppApp::println("  Delete");
+            }
+            
+            CppApp::println("");
+            CppApp::println("Button: execute");
+            CppApp::println("Left: back");
         }
         
         if (sending && (millis() - lastSendTime < 200)) {
             CppApp::println("");
             CppApp::println("Sending...");
         }
-        
-        CppApp::println("");
-        CppApp::println("Left: back/exit");
         
         CppApp::refresh();
     };
@@ -132,90 +245,215 @@ CPP_APP(ir_remote) {
         bool btnJustPressed = btnHeld && !lastButtonState;
         
         if (leftPressed) {
-            if (menuIndex > 0) {
-                menuIndex--;
-                render();
-            } else {
+            if (navLevel == PROTOCOL) {
                 CppApp::exit();
                 break;
+            } else if (navLevel == BRAND) {
+                navLevel = PROTOCOL;
+                render();
+            } else if (navLevel == CODE_LIST) {
+                navLevel = BRAND;
+                codeIndex = 0;
+                render();
+            } else if (navLevel == CODE_ACTIONS) {
+                navLevel = CODE_LIST;
+                actionIndex = 0;
+                render();
             }
         }
         
-        if (menuIndex == 0) {
-            // Protocol selection
+        if (navLevel == PROTOCOL) {
             if (upPressed) {
                 protocolIndex = (protocolIndex - 1 + numProtocols) % numProtocols;
+                brandIndex = 0;
                 render();
             }
             if (downPressed) {
                 protocolIndex = (protocolIndex + 1) % numProtocols;
+                brandIndex = 0;
                 render();
             }
             if (rightPressed) {
-                menuIndex = 1;
-                render();
-            }
-            if (btnJustPressed) {
-                // Send test code on initial press
-                sending = true;
-                lastSendTime = millis();
-                lastRepeatTime = millis();
-                switch (protocolIndex) {
-                    case 0: // NEC
-                        sendNEC(0x00FF, 0x00FF);
-                        break;
-                    case 1: // RC5
-                        sendRC5(0x00, 0x0C);
-                        break;
-                    case 2: // Sony
-                        sendSony(0x1CE1, 12);
-                        break;
-                }
-                render();
-            }
-            // Continue sending while button is held
-            if (btnHeld && sending && (millis() - lastRepeatTime >= REPEAT_INTERVAL)) {
-                lastRepeatTime = millis();
-                lastSendTime = millis();
-                switch (protocolIndex) {
-                    case 0: // NEC
-                        sendNEC(0x00FF, 0x00FF);
-                        break;
-                    case 1: // RC5
-                        sendRC5(0x00, 0x0C);
-                        break;
-                    case 2: // Sony
-                        sendSony(0x1CE1, 12);
-                        break;
+                std::vector<String> brands = getBrands();
+                if (brands.size() > 0 || isCustomProtocol()) {
+                    navLevel = BRAND;
+                    brandIndex = 0;
+                    render();
                 }
             }
-        } else if (menuIndex == 1) {
-            // TV remote codes
+            
+        } else if (navLevel == BRAND) {
+            std::vector<String> brands = getBrands();
+            bool isCustom = isCustomProtocol();
+            int maxIndex = brands.size() + (isCustom ? 1 : 0);
+            
+            if (upPressed && maxIndex > 0) {
+                brandIndex = (brandIndex - 1 + maxIndex) % maxIndex;
+                render();
+            }
+            if (downPressed && maxIndex > 0) {
+                brandIndex = (brandIndex + 1) % maxIndex;
+                render();
+            }
+            if (rightPressed) {
+                if (isCustom && brandIndex == (int)brands.size()) {
+                    // Create new folder
+                    char folderName[64] = "";
+                    if (showKeyboard("Folder name:", folderName, sizeof(folderName))) {
+                        String cleanName = String(folderName);
+                        int newlinePos = cleanName.indexOf('\n');
+                        if (newlinePos >= 0) cleanName = cleanName.substring(0, newlinePos);
+                        cleanName.trim();
+                        
+                        if (cleanName.length() > 0) {
+                            if (createCustomFolder(cleanName.c_str())) {
+                                // Reload brands and select the new folder
+                                brands = getBrands();
+                                for (size_t i = 0; i < brands.size(); i++) {
+                                    if (brands[i].equalsIgnoreCase(cleanName)) {
+                                        brandIndex = i;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    render();
+                } else if (brandIndex < (int)brands.size()) {
+                    currentFolder = brands[brandIndex];
+                    navLevel = CODE_LIST;
+                    codeIndex = 0;
+                    render();
+                }
+            }
+            
+        } else if (navLevel == CODE_LIST) {
+            // Refresh codes list each time we enter this section
+            codes = getCodesForBrand(currentFolder);
+            bool isCustom = isCustomProtocol();
+            int numOptions = codes.size() + (isCustom ? 2 : 0);
+            
+            if (upPressed && numOptions > 0) {
+                codeIndex = (codeIndex - 1 + numOptions) % numOptions;
+                render();
+            }
+            if (downPressed && numOptions > 0) {
+                codeIndex = (codeIndex + 1) % numOptions;
+                render();
+            }
+            
+            if (isCustom) {
+                // Custom protocol - navigate or take action
+                if (rightPressed || btnJustPressed) {
+                    if (codeIndex == (int)codes.size()) {
+                        // New entry - scan code
+                        CppApp::clear();
+                        CppApp::println("Scanning...");
+                        CppApp::println("");
+                        CppApp::println("Point remote");
+                        CppApp::println("at receiver");
+                        CppApp::refresh();
+                        
+                        TVCode scannedCode;
+                        char protocolName[32] = "";
+                        if (scanIRCode(10000, &scannedCode, protocolName, sizeof(protocolName))) {
+                            char buttonName[64] = "";
+                            if (showKeyboard("Button name:", buttonName, sizeof(buttonName))) {
+                                String cleanName = String(buttonName);
+                                int newlinePos = cleanName.indexOf('\n');
+                                if (newlinePos >= 0) cleanName = cleanName.substring(0, newlinePos);
+                                cleanName.trim();
+                                
+                                if (cleanName.length() > 0) {
+                                    if (saveCustomCode(currentFolder.c_str(), cleanName.c_str(), &scannedCode)) {
+                                        // Successfully saved - refresh codes list and select the new code
+                                        codes = getCodesForBrand(currentFolder);
+                                        codeIndex = codes.size() - 1;  // Select the newly added code
+                                    }
+                                }
+                            }
+                        } else {
+                            CppApp::clear();
+                            CppApp::println("Scan failed");
+                            CppApp::println("");
+                            CppApp::println("Timeout or");
+                            CppApp::println("no signal");
+                            CppApp::refresh();
+                            delay(2000);
+                        }
+                        render();
+                        
+                    } else if (codeIndex == (int)codes.size() + 1) {
+                        // Delete folder
+                        deleteCustomFolder(currentFolder.c_str());
+                        navLevel = BRAND;
+                        codeIndex = 0;
+                        render();
+                        
+                    } else if (codeIndex < (int)codes.size()) {
+                        // Enter code actions
+                        currentCodeName = codes[codeIndex]->button;
+                        currentCode = codes[codeIndex];
+                        navLevel = CODE_ACTIONS;
+                        actionIndex = 0;
+                        render();
+                    }
+                }
+            } else {
+                // Regular protocol - send on button press
+                if (btnJustPressed && codeIndex < (int)codes.size()) {
+                    sending = true;
+                    lastSendTime = millis();
+                    lastRepeatTime = millis();
+                    sendTVCode(codes[codeIndex]);
+                    render();
+                }
+                
+                // Continue sending while held
+                if (btnHeld && sending && codeIndex < (int)codes.size() &&
+                    (millis() - lastRepeatTime >= REPEAT_INTERVAL)) {
+                    lastRepeatTime = millis();
+                    lastSendTime = millis();
+                    sendTVCode(codes[codeIndex]);
+                }
+            }
+            
+        } else if (navLevel == CODE_ACTIONS) {
             if (upPressed) {
-                deviceIndex = (deviceIndex - 1 + numTVCodes) % numTVCodes;
+                actionIndex = (actionIndex - 1 + 2) % 2;
                 render();
             }
             if (downPressed) {
-                deviceIndex = (deviceIndex + 1) % numTVCodes;
+                actionIndex = (actionIndex + 1) % 2;
                 render();
             }
-            if (btnJustPressed) {
-                // Send selected code on initial press
-                sending = true;
-                lastSendTime = millis();
-                lastRepeatTime = millis();
-                sendNEC(tvCodes[deviceIndex].address, tvCodes[deviceIndex].command);
+            
+            if (actionIndex == 0) {
+                // Run - hold to send
+                if (btnJustPressed) {
+                    sending = true;
+                    lastSendTime = millis();
+                    lastRepeatTime = millis();
+                    sendTVCode(currentCode);
+                    render();
+                }
+                
+                if (btnHeld && sending && (millis() - lastRepeatTime >= REPEAT_INTERVAL)) {
+                    lastRepeatTime = millis();
+                    lastSendTime = millis();
+                    sendTVCode(currentCode);
+                }
+            } else if (actionIndex == 1 && btnJustPressed) {
+                // Delete
+                deleteCustomCode(currentFolder.c_str(), currentCodeName.c_str());
+                navLevel = CODE_LIST;
+                codeIndex = 0;
+                actionIndex = 0;
                 render();
-            }
-            // Continue sending while button is held
-            if (btnHeld && sending && (millis() - lastRepeatTime >= REPEAT_INTERVAL)) {
-                lastRepeatTime = millis();
-                lastSendTime = millis();
-                sendNEC(tvCodes[deviceIndex].address, tvCodes[deviceIndex].command);
             }
         }
         
-        // Stop sending when button is released
+        // Stop sending when button released
         if (!btnHeld && sending) {
             sending = false;
             render();
@@ -228,7 +466,7 @@ CPP_APP(ir_remote) {
 
 REGISTER_CPP_APP(ir_remote, "/Applications/Infrared/Universal Remote");
 
-// Simple IR Test App - sends a test pulse
+// Simple IR Test App
 CPP_APP(ir_test) {
     int state = 0;
     unsigned long lastAction = 0;
@@ -273,7 +511,6 @@ CPP_APP(ir_test) {
         if (btnPressed && state == 0) {
             state = 1;
             lastAction = millis();
-            // Send a simple test pulse
             sendIRPulse(9000, 4500, 38000);
             render();
         }

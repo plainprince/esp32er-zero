@@ -30,13 +30,19 @@
  *   Anode  -> GPIO 25 (via current-limiting resistor ~100-220 ohm)
  *   Cathode -> GND
  *   Note: Use a transistor (e.g., 2N2222) for higher power/range
+ * 
+ * IR Receiver Module (3-pin):
+ *   G (Ground)  -> GND
+ *   R (VCC)     -> 3.3V (or 5V depending on module)
+ *   Y (Signal)  -> GPIO 26 (digital input)
+ *   Note: Most IR receiver modules work at 3.3V, check datasheet
  */
 
 #include <Arduino.h>
 #include "config.h"
 
 // Display driver includes
-#if DISPLAY_TYPE == SSD1306
+#if DISPLAY_TYPE == SSD1306gem
     #include <SSD1306Display.h>
 #elif DISPLAY_TYPE == EPAPER
     #include <EPaperDisplay.h>

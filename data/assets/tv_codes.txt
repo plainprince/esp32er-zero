@@ -1,0 +1,127 @@
+# TV Remote Codes Configuration
+# Format: protocol:brand:button_name:address:command:nbits
+# 
+# Protocol names: NEC, SONY, RC5, RC6, SAMSUNG, LG, PANASONIC, SHARP, JVC, etc.
+# Brand: TV brand name (e.g., LG, Samsung, Sony, Panasonic) or "DEFAULT" for generic codes
+# Button name: Power, Vol+, Vol-, Ch+, Ch-, Mute, Input, Menu, Up, Down, Left, Right, OK, Back, 0-9
+# Address: Protocol-specific address (hex format, 0x prefix optional)
+# Command: Button command code (hex format, 0x prefix optional)
+# nbits: Number of bits (usually 32 for NEC, 12-20 for Sony, etc.)
+#
+# Lines starting with # are comments
+# Empty lines are ignored
+
+# LG TV codes (NEC protocol)
+# Note: LG TVs use NEC protocol with address 0x20DF
+# Power code: full 32-bit value is 0x20DF10EF
+# Format: address (16 bits) + command (8 bits) + inverted command (8 bits, auto)
+# So: address=0x20DF, command=0x10 (upper 8 bits of lower 16)
+# Alternative: address=0x20DF, command=0x0C
+NEC:LG:Power:0x20DF:0x10:32
+NEC:LG:Power2:0x20DF:0x0C:32
+# Alternative address (older LG models)
+NEC:LG:Power3:0x04CB:0x08:32
+# LG TV other codes (NEC protocol, address 0x20DF)
+NEC:LG:Vol+:0x20DF:0x10:32
+NEC:LG:Vol-:0x20DF:0x11:32
+NEC:LG:Ch+:0x20DF:0x20:32
+NEC:LG:Ch-:0x20DF:0x21:32
+NEC:LG:Mute:0x20DF:0x0E:32
+NEC:LG:Input:0x20DF:0x0B:32
+NEC:LG:Menu:0x20DF:0x51:32
+NEC:LG:Up:0x20DF:0x40:32
+NEC:LG:Down:0x20DF:0x41:32
+NEC:LG:Left:0x20DF:0x07:32
+NEC:LG:Right:0x20DF:0x06:32
+NEC:LG:OK:0x20DF:0x44:32
+NEC:LG:Back:0x20DF:0x28:32
+NEC:LG:1:0x20DF:0x01:32
+NEC:LG:2:0x20DF:0x02:32
+NEC:LG:3:0x20DF:0x03:32
+NEC:LG:4:0x20DF:0x04:32
+NEC:LG:5:0x20DF:0x05:32
+NEC:LG:6:0x20DF:0x06:32
+NEC:LG:7:0x20DF:0x07:32
+NEC:LG:8:0x20DF:0x08:32
+NEC:LG:9:0x20DF:0x09:32
+NEC:LG:0:0x20DF:0x00:32
+
+# Samsung TV codes (SAMSUNG protocol)
+# Note: Samsung uses full 32-bit codes, address field is ignored
+SAMSUNG:Samsung:Power:0x0000:0xE0E040BF:32
+SAMSUNG:Samsung:Vol+:0x0000:0xE0E0E01F:32
+SAMSUNG:Samsung:Vol-:0x0000:0xE0E0D02F:32
+SAMSUNG:Samsung:Ch+:0x0000:0xE0E048B7:32
+SAMSUNG:Samsung:Ch-:0x0000:0xE0E008F7:32
+SAMSUNG:Samsung:Mute:0x0000:0xE0E0F00F:32
+SAMSUNG:Samsung:Input:0x0000:0xE0E0807F:32
+SAMSUNG:Samsung:Menu:0x0000:0xE0E058A7:32
+SAMSUNG:Samsung:Up:0x0000:0xE0E006F9:32
+SAMSUNG:Samsung:Down:0x0000:0xE0E08679:32
+SAMSUNG:Samsung:Left:0x0000:0xE0E0A659:32
+SAMSUNG:Samsung:Right:0x0000:0xE0E046B9:32
+SAMSUNG:Samsung:OK:0x0000:0xE0E016E9:32
+SAMSUNG:Samsung:Back:0x0000:0xE0E01AE5:32
+SAMSUNG:Samsung:1:0x0000:0xE0E020DF:32
+SAMSUNG:Samsung:2:0x0000:0xE0E0A05F:32
+SAMSUNG:Samsung:3:0x0000:0xE0E0609F:32
+SAMSUNG:Samsung:4:0x0000:0xE0E010EF:32
+SAMSUNG:Samsung:5:0x0000:0xE0E0906F:32
+SAMSUNG:Samsung:6:0x0000:0xE0E050AF:32
+SAMSUNG:Samsung:7:0x0000:0xE0E030CF:32
+SAMSUNG:Samsung:8:0x0000:0xE0E0B04F:32
+SAMSUNG:Samsung:9:0x0000:0xE0E0708F:32
+SAMSUNG:Samsung:0:0x0000:0xE0E08877:32
+
+# Sony TV codes (SONY protocol)
+SONY:Sony:Power:0xA90:12:12
+SONY:Sony:Vol+:0x490:12:12
+SONY:Sony:Vol-:0xC90:12:12
+SONY:Sony:Ch+:0x090:12:12
+SONY:Sony:Ch-:0x890:12:12
+SONY:Sony:Mute:0x290:12:12
+SONY:Sony:Input:0x690:12:12
+SONY:Sony:Menu:0x1CE1:12:12
+SONY:Sony:Up:0x590:12:12
+SONY:Sony:Down:0x990:12:12
+SONY:Sony:Left:0xD90:12:12
+SONY:Sony:Right:0x190:12:12
+SONY:Sony:OK:0x5C8:12:12
+SONY:Sony:Back:0x9C8:12:12
+SONY:Sony:1:0x010:12:12
+SONY:Sony:2:0x810:12:12
+SONY:Sony:3:0x410:12:12
+SONY:Sony:4:0xC10:12:12
+SONY:Sony:5:0x210:12:12
+SONY:Sony:6:0xA10:12:12
+SONY:Sony:7:0x610:12:12
+SONY:Sony:8:0xE10:12:12
+SONY:Sony:9:0x110:12:12
+SONY:Sony:0:0x910:12:12
+
+# Default/Generic codes (NEC protocol) - used when brand-specific codes aren't found
+NEC:DEFAULT:Power:0x00FF:0x00FF:32
+NEC:DEFAULT:Vol+:0x00FF:0x00FE:32
+NEC:DEFAULT:Vol-:0x00FF:0x00FD:32
+NEC:DEFAULT:Ch+:0x00FF:0x00FC:32
+NEC:DEFAULT:Ch-:0x00FF:0x00FB:32
+NEC:DEFAULT:Mute:0x00FF:0x00FA:32
+NEC:DEFAULT:Input:0x00FF:0x00F9:32
+NEC:DEFAULT:Menu:0x00FF:0x00F8:32
+NEC:DEFAULT:Up:0x00FF:0x00F7:32
+NEC:DEFAULT:Down:0x00FF:0x00F6:32
+NEC:DEFAULT:Left:0x00FF:0x00F5:32
+NEC:DEFAULT:Right:0x00FF:0x00F4:32
+NEC:DEFAULT:OK:0x00FF:0x00F3:32
+NEC:DEFAULT:Back:0x00FF:0x00F2:32
+NEC:DEFAULT:1:0x00FF:0x00E1:32
+NEC:DEFAULT:2:0x00FF:0x00E2:32
+NEC:DEFAULT:3:0x00FF:0x00E3:32
+NEC:DEFAULT:4:0x00FF:0x00E4:32
+NEC:DEFAULT:5:0x00FF:0x00E5:32
+NEC:DEFAULT:6:0x00FF:0x00E6:32
+NEC:DEFAULT:7:0x00FF:0x00E7:32
+NEC:DEFAULT:8:0x00FF:0x00E8:32
+NEC:DEFAULT:9:0x00FF:0x00E9:32
+NEC:DEFAULT:0:0x00FF:0x00EA:32
+
