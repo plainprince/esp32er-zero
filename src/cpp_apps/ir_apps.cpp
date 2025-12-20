@@ -17,7 +17,10 @@ CPP_APP(ir_remote) {
     int protocolIndex = 0;
     int deviceIndex = 0;
     bool sending = false;
+    bool lastButtonState = false;
     unsigned long lastSendTime = 0;
+    unsigned long lastRepeatTime = 0;
+    const unsigned long REPEAT_INTERVAL = 80; // Time between IR repeats in ms (faster repeat for better responsiveness)
     
     // Protocol names
     const char* protocols[] = {"NEC", "RC5", "Sony"};
@@ -125,7 +128,8 @@ CPP_APP(ir_remote) {
         bool downPressed = CppApp::down();
         bool leftPressed = CppApp::left();
         bool rightPressed = CppApp::right();
-        bool btnPressed = CppApp::button();
+        bool btnHeld = CppApp::buttonRaw();
+        bool btnJustPressed = btnHeld && !lastButtonState;
         
         if (leftPressed) {
             if (menuIndex > 0) {
@@ -151,10 +155,11 @@ CPP_APP(ir_remote) {
                 menuIndex = 1;
                 render();
             }
-            if (btnPressed) {
-                // Send test code
+            if (btnJustPressed) {
+                // Send test code on initial press
                 sending = true;
                 lastSendTime = millis();
+                lastRepeatTime = millis();
                 switch (protocolIndex) {
                     case 0: // NEC
                         sendNEC(0x00FF, 0x00FF);
@@ -168,6 +173,22 @@ CPP_APP(ir_remote) {
                 }
                 render();
             }
+            // Continue sending while button is held
+            if (btnHeld && sending && (millis() - lastRepeatTime >= REPEAT_INTERVAL)) {
+                lastRepeatTime = millis();
+                lastSendTime = millis();
+                switch (protocolIndex) {
+                    case 0: // NEC
+                        sendNEC(0x00FF, 0x00FF);
+                        break;
+                    case 1: // RC5
+                        sendRC5(0x00, 0x0C);
+                        break;
+                    case 2: // Sony
+                        sendSony(0x1CE1, 12);
+                        break;
+                }
+            }
         } else if (menuIndex == 1) {
             // TV remote codes
             if (upPressed) {
@@ -178,20 +199,29 @@ CPP_APP(ir_remote) {
                 deviceIndex = (deviceIndex + 1) % numTVCodes;
                 render();
             }
-            if (btnPressed) {
-                // Send selected code
+            if (btnJustPressed) {
+                // Send selected code on initial press
                 sending = true;
                 lastSendTime = millis();
+                lastRepeatTime = millis();
                 sendNEC(tvCodes[deviceIndex].address, tvCodes[deviceIndex].command);
                 render();
             }
+            // Continue sending while button is held
+            if (btnHeld && sending && (millis() - lastRepeatTime >= REPEAT_INTERVAL)) {
+                lastRepeatTime = millis();
+                lastSendTime = millis();
+                sendNEC(tvCodes[deviceIndex].address, tvCodes[deviceIndex].command);
+            }
         }
         
-        if (sending && (millis() - lastSendTime >= 200)) {
+        // Stop sending when button is released
+        if (!btnHeld && sending) {
             sending = false;
             render();
         }
         
+        lastButtonState = btnHeld;
         CppApp::waitFrame(50);
     }
 }
