@@ -265,3 +265,4 @@ void registerIRApps() {
     registerCppApp("IR Test", "/Applications/Infrared/IR Test", cppapp_ir_test);
 #endif
 }
+

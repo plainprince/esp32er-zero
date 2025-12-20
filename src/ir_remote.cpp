@@ -39,3 +39,4 @@ void sendIRPulse(uint16_t onTime, uint16_t offTime, uint32_t frequency) {
     irsend.sendRaw(rawData, 2, frequency);
     delay(50);
 }
+
