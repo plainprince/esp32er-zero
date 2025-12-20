@@ -2,6 +2,12 @@
 #include "cpp_app.h"
 #include "ir_remote.h"
 
+#if __has_include("security_config.h")
+    #include "security_config.h"
+#else
+    #define ENABLE_ADVANCED_IR 0
+#endif
+
 // Universal Remote App
 // Supports common IR protocols: NEC, RC5, Sony
 // Includes preset codes for common TV brands
@@ -190,7 +196,7 @@ CPP_APP(ir_remote) {
     }
 }
 
-REGISTER_CPP_APP(ir_remote, "/Tools/IR Remote");
+REGISTER_CPP_APP(ir_remote, "/Applications/Infrared/Universal Remote");
 
 // Simple IR Test App - sends a test pulse
 CPP_APP(ir_test) {
@@ -251,9 +257,11 @@ CPP_APP(ir_test) {
     }
 }
 
-REGISTER_CPP_APP(ir_test, "/Tools/IR Test");
+REGISTER_CPP_APP(ir_test, "/Applications/Infrared/IR Test");
 
 void registerIRApps() {
-    registerCppApp("IR Remote", "/Tools/IR Remote", cppapp_ir_remote);
-    registerCppApp("IR Test", "/Tools/IR Test", cppapp_ir_test);
+#if ENABLE_ADVANCED_IR
+    registerCppApp("Universal Remote", "/Applications/Infrared/Universal Remote", cppapp_ir_remote);
+    registerCppApp("IR Test", "/Applications/Infrared/IR Test", cppapp_ir_test);
+#endif
 }
