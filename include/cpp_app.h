@@ -6,6 +6,7 @@
 #include <FlipperDisplay.h>
 #include <vector>
 #include <functional>
+#include <string>
 
 
 
@@ -59,8 +60,8 @@ typedef void (*CppAppMain)();
 
 
 struct CppAppInfo {
-    String name;        
-    String uiPath;      
+    std::string name;        
+    std::string uiPath;      
     CppAppMain mainFunc;
 };
 
@@ -109,6 +110,17 @@ void initCppApps();
 void registerDemoApps();
 void registerWifiApps();
 void registerIRApps();
+void registerBLEApps();
+
+#if __has_include("security_config.h")
+    #include "security_config.h"
+#else
+    #define ENABLE_BLE 0
+#endif
+
+#if ENABLE_BLE
+// Cleanup function for C++ BLE keyboard objects (called from Lua BLE code)
+void cleanupBLEKeyboard();
+#endif
 
 #endif 
-

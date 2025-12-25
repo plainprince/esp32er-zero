@@ -1,45 +1,8 @@
-/*
- * Flipper Zero UI Clone
- * 
- * WIRING (ESP32 DevKit V1):
- * 
- * Waveshare 2.9" e-Paper (296x128, 8-pin SPI):
- *   VCC  -> 3.3V (NOT 5V!)
- *   GND  -> GND
- *   DIN  -> GPIO 23 (MOSI)
- *   CLK  -> GPIO 18 (SCK)
- *   CS   -> GPIO 5
- *   DC   -> GPIO 17
- *   RST  -> GPIO 16
- *   BUSY -> GPIO 4
- * 
- * Analog Joystick (5-pin):
- *   VCC  -> 3.3V
- *   GND  -> GND
- *   VRx  -> GPIO 34 (horizontal)
- *   VRy  -> GPIO 35 (vertical)
- *   SW   -> GPIO 32 (button, directly to pin - uses internal pullup)
- * 
- * SSD1306 OLED (I2C, 4-pin) - alternative display:
- *   VCC  -> 3.3V
- *   GND  -> GND
- *   SCL  -> GPIO 22
- *   SDA  -> GPIO 21
- * 
- * IR LED (for universal remote):
- *   Anode  -> GPIO 25 (via current-limiting resistor ~100-220 ohm)
- *   Cathode -> GND
- *   Note: Use a transistor (e.g., 2N2222) for higher power/range
- * 
- * IR Receiver Module (3-pin):
- *   G (Ground)  -> GND
- *   R (VCC)     -> 3.3V (or 5V depending on module)
- *   Y (Signal)  -> GPIO 26 (digital input)
- *   Note: Most IR receiver modules work at 3.3V, check datasheet
- */
-
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "config.h"
+#include <string>
 
 // Display driver includes
 #if DISPLAY_TYPE == SSD1306gem
@@ -124,22 +87,14 @@ void onMusicPlay(const char* path, const char* name) {
 }
 
 // Generic Lua script launcher - loads script from filesystem based on UI path
-void onLuaScript(const char* uiPath, const char* name) {
-    // Look up the actual filesystem path from the registered mapping
-    String fsPath = getScriptFsPath(uiPath);
-    
-    if (fsPath.length() == 0) {
-        Serial.print("ERROR: No filesystem path registered for: ");
-        Serial.println(uiPath);
-        return;
-    }
-    
+void onLuaScript(const char* path, const char* name) {
+    // Path passed here is the direct filesystem path from the dynamic loader
     Serial.print("Starting Lua script: ");
     Serial.print(name);
     Serial.print(" from ");
-    Serial.println(fsPath);
+    Serial.println(path);
     
-    setLuaScriptFromFile(fsPath.c_str());
+    setLuaScriptFromFile(path);
     startApp(luaApp);
 }
 
@@ -166,8 +121,11 @@ void onFileExplorer(const char* uiPath, const char* name) {
 // Types: d=folder, f=file, a=application
 // ICON: prefix is optional, uses default icon if omitted
 
-// Minimal file structure - apps are loaded from data/apps folder
-const String fileStructure = R"(
+// Minimal file structure - apps are loaded dynamically from data/apps folder
+const std::string fileStructure = R"(
+d ICON:app Applications
+d ICON:game Games
+d ICON:settings Tools
 d ICON:settings Settings
  d ICON:info Documentation
   f ICON:info About
@@ -189,9 +147,13 @@ static volatile bool renderRequested = false;
 // Render task uses polling instead of semaphore for simplicity
 static TaskHandle_t renderTaskHandle = NULL;
 
+// Memory logging task
+static TaskHandle_t memoryLogTaskHandle = NULL;
+
 // Forward declarations
 void renderTask(void* parameter);
 void requestRender();
+void memoryLogTask(void* parameter);
 
 void setup() {
     Serial.begin(115200);
@@ -241,6 +203,9 @@ void setup() {
     registerAppCallback("About", onAbout);
     registerAppCallback("Storage", onFileExplorer);
     
+    // Register generic Lua callback for dynamic apps
+    registerAppCallback("Lua", onLuaScript);
+    
     // Initialize Lua filesystem and interpreter
     initLuaFS();
     initLua();
@@ -249,58 +214,22 @@ void setup() {
     // Initialize IR remote
     initIRRemote();
     
-    // Load assets (loading screen, etc.)
-    loadLoadingScreen();
+    // NOTE: Loading screen is now loaded lazily when first needed
+    // This saves memory at startup
     
     // Load file structure from string
     loadFromString(fileStructure);
     
-    // Dynamically add Lua scripts from filesystem
-    // Folder structure in /apps/ maps to UI paths:
-    // /apps/Applications/*.lua -> /Applications/*
-    // /apps/Games/*.lua -> /Games/*
-    // /apps/Tools/*.lua -> /Tools/*
-    //
-    // NOTE: You must upload the filesystem separately with: pio run -t uploadfs
+    // Register dynamic folders
+    // Note: Actual folders may have [icon] prefixes like [app]Applications
+    // The scanner will find them automatically
+    registerDynamicFolder("/Applications", "/apps/Applications");
+    registerDynamicFolder("/Games", "/apps/Games");
+    registerDynamicFolder("/Tools", "/apps/Tools");
     
-    // First, create UI folders from filesystem folders
-    // Folder names can have [icon] prefix: "[game]Games" -> icon=game, name=Games
-    std::vector<ScriptFolder> folders = listScriptFolders();
-    for (const auto& folder : folders) {
-        addFolder(folder.uiPath.c_str(), folder.icon.c_str());
-        Serial.print(F("Created UI folder: "));
-        Serial.print(folder.uiPath);
-        Serial.print(F(" ["));
-        Serial.print(folder.icon);
-        Serial.println(F("]"));
-    }
-    
-    // Now add scripts to their folders
-    // Script names can have [icon] prefix: "[game]snake.lua" -> icon=game, name=snake
-    std::vector<ScriptInfo> scripts = listAllScripts();
-    Serial.print(F("Found "));
-    Serial.print(scripts.size());
-    Serial.println(F(" scripts on filesystem"));
-    
-    for (const auto& script : scripts) {
-        // Only handle Lua scripts (C++ apps are registered separately)
-        if (script.type != ScriptType::LUA) {
-            continue;
-        }
-        
-        // Register the UI path -> filesystem path mapping
-        registerScriptPath(script.uiPath, script.path);
-        
-        // Add script as an app with its icon
-        addApp(script.uiPath.c_str(), onLuaScript, script.icon.c_str());
-        
-        Serial.print(F("Added Lua app: "));
-        Serial.print(script.name);
-        Serial.print(F(" ["));
-        Serial.print(script.icon);
-        Serial.print(F("] at "));
-        Serial.println(script.uiPath);
-    }
+    // Scan filesystem and cache folder structure (folders and file names, not contents)
+    // This allows fast navigation while keeping file contents on-demand
+    scanAndCacheFolderStructure();
     
     // Add registered C++ apps to UI
     std::vector<CppAppInfo>& cppApps = getCppApps();
@@ -310,26 +239,26 @@ void setup() {
     
     for (const auto& app : cppApps) {
         // Create all parent folders in the path
-        String uiPath = app.uiPath;
+        std::string uiPath = app.uiPath;
         
         // Build path progressively and create missing folders
-        String currentPath = "";
-        int startIdx = 1; // Skip leading /
+        std::string currentPath = "";
+        size_t startIdx = 1; // Skip leading /
         
-        while (startIdx < (int)uiPath.length()) {
-            int nextSlash = uiPath.indexOf('/', startIdx);
-            if (nextSlash == -1) {
+        while (startIdx < uiPath.length()) {
+            size_t nextSlash = uiPath.find('/', startIdx);
+            if (nextSlash == std::string::npos) {
                 // This is the app name, not a folder
                 break;
             }
             
-            currentPath = uiPath.substring(0, nextSlash);
+            currentPath = uiPath.substr(0, nextSlash);
             
             // Check if folder exists
             FSEntry* folder = getEntry(currentPath);
             if (!folder) {
                 // Determine icon based on folder name
-                String folderName = uiPath.substring(startIdx, nextSlash);
+                std::string folderName = uiPath.substr(startIdx, nextSlash - startIdx);
                 const char* icon = "folder";
                 if (folderName == "WiFi") icon = "wifi";
                 else if (folderName == "Applications") icon = "app";
@@ -337,7 +266,7 @@ void setup() {
                 else if (folderName == "Tools") icon = "settings";
                 
                 Serial.print(F("Creating folder: "));
-                Serial.println(currentPath);
+                Serial.println(currentPath.c_str());
                 addFolder(currentPath.c_str(), icon);
             }
             
@@ -348,9 +277,9 @@ void setup() {
         addApp(app.uiPath.c_str(), onCppApp, "app");
         
         Serial.print(F("Added C++ app: "));
-        Serial.print(app.name);
+        Serial.print(app.name.c_str());
         Serial.print(F(" at "));
-        Serial.println(app.uiPath);
+        Serial.println(app.uiPath.c_str());
     }
     
     // Initialize menu
@@ -375,6 +304,18 @@ void setup() {
         0                 // Run on Core 0 (main loop runs on Core 1)
     );
     Serial.println(F("Render task created on Core 0"));
+    
+    // Create memory logging task - runs on Core 0 with low priority (non-critical)
+    xTaskCreatePinnedToCore(
+        memoryLogTask,         // Task function
+        "MemoryLogTask",       // Name
+        2048,                  // Stack size
+        NULL,                  // Parameters
+        0,                     // Low priority (non-critical, just logging)
+        &memoryLogTaskHandle,  // Task handle
+        0                      // Run on Core 0 (same as render task)
+    );
+    Serial.println(F("Memory logging task created on Core 0 (low priority)"));
     
     // Initial render (direct, not via task)
     #if DISPLAY_TYPE == DUAL
@@ -440,10 +381,52 @@ void renderTask(void* parameter) {
             setLEDReady();
             releaseDisplayLock();
             // Loop immediately to check for more render requests
+            vTaskDelay(1); // Small delay to avoid WDT trigger if loop is tight
         } else {
             // Nothing to render, small yield
-            vTaskDelay(1);
+            vTaskDelay(10 / portTICK_PERIOD_MS);
         }
+    }
+}
+
+// Memory logging task - logs free heap periodically
+void memoryLogTask(void* parameter) {
+    const TickType_t normalLogInterval = pdMS_TO_TICKS(5000);  // Log every 5 seconds normally
+    const TickType_t lowMemLogInterval = pdMS_TO_TICKS(1000); // Log every 1 second if low memory
+    TickType_t lastWakeTime = xTaskGetTickCount();
+    const uint32_t LOW_MEMORY_THRESHOLD = 20480; // 20KB
+    
+    while (true) {
+        // Log memory statistics
+        uint32_t freeHeap = ESP.getFreeHeap();
+        uint32_t minFreeHeap = ESP.getMinFreeHeap();
+        uint32_t maxAllocHeap = ESP.getMaxAllocHeap();
+        uint32_t heapSize = ESP.getHeapSize();
+        
+        bool isLowMemory = freeHeap < LOW_MEMORY_THRESHOLD;
+        
+        // Always log memory stats
+        Serial.print(F("[MEM] Free: "));
+        Serial.print(freeHeap);
+        Serial.print(F(" bytes | Min Free: "));
+        Serial.print(minFreeHeap);
+        Serial.print(F(" bytes | Max Alloc: "));
+        Serial.print(maxAllocHeap);
+        Serial.print(F(" bytes | Heap Size: "));
+        Serial.print(heapSize);
+        Serial.print(F(" bytes | Usage: "));
+        Serial.print((heapSize - freeHeap) * 100 / heapSize);
+        Serial.print(F("%"));
+        
+        // Add warning if low memory
+        if (isLowMemory) {
+            Serial.print(F(" [LOW MEMORY!]"));
+        }
+        Serial.println();
+        
+        // Use shorter interval if memory is low, otherwise normal interval
+        TickType_t logInterval = isLowMemory ? lowMemLogInterval : normalLogInterval;
+        vTaskDelayUntil(&lastWakeTime, logInterval);
     }
 }
 

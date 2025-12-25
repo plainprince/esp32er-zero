@@ -6,56 +6,71 @@
 #include "filesystem.h"
 #include <LittleFS.h>
 #include <vector>
+#include <string>
 
 static IRsend irsend(IR_LED_PIN);
 static IRrecv irrecv(IR_RECEIVER_PIN);
 static std::vector<TVCode> tvCodes;
-static std::vector<String> protocolNames;
-static std::vector<String> discoveredProtocols; // For dynamic protocol discovery
+static std::vector<const char*> protocolNames;
+static char discoveredProtocols[32][64]; // Fixed array for protocol names (max 32 protocols, 64 chars each)
+static int discoveredProtocolCount = 0;
 static std::vector<const char*> protocolPtrs; // C-style array for return
 static std::vector<TVCode> customCodes; // Custom scanned codes
 
 // Forward declarations
-uint64_t parseHex(const String& str);
+uint64_t parseHex(const char* str);
+
+// Case-insensitive string comparison helper (no String allocation)
+bool strcasecmp_eq(const char* a, const char* b) {
+    if (!a || !b) return false;
+    while (*a && *b) {
+        char ca = (*a >= 'a' && *a <= 'z') ? (*a - 32) : *a;
+        char cb = (*b >= 'a' && *b <= 'z') ? (*b - 32) : *b;
+        if (ca != cb) return false;
+        a++;
+        b++;
+    }
+    return *a == *b;
+}
 
 // Helper function to convert protocol name string to decode_type_t
+// Optimized to avoid String allocations - prevents memory fragmentation when called rapidly
 decode_type_t protocolNameToType(const char* protocol) {
-    String proto = String(protocol);
-    proto.toUpperCase();
+    if (!protocol) return UNKNOWN;
     
-    // Map protocol names to decode_type_t enum values
+    // Map protocol names to decode_type_t enum values (case-insensitive, no String allocation)
     // Common TV remote protocols
-    if (proto == "NEC") return NEC;
-    if (proto == "SONY") return SONY;
-    if (proto == "RC5") return RC5;
-    if (proto == "RC6") return RC6;
-    if (proto == "SAMSUNG") return SAMSUNG;
-    if (proto == "LG") return LG;
-    if (proto == "PANASONIC") return PANASONIC;
-    if (proto == "SHARP") return SHARP;
-    if (proto == "JVC") return JVC;
-    if (proto == "DENON") return DENON;
-    if (proto == "DISH") return DISH;
-    if (proto == "PIONEER") return PIONEER;
-    if (proto == "LG2") return LG2;
-    if (proto == "SAMSUNG36") return SAMSUNG36;
-    if (proto == "NEC_LIKE") return NEC_LIKE;
+    if (strcasecmp_eq(protocol, "NEC")) return NEC;
+    if (strcasecmp_eq(protocol, "SONY")) return SONY;
+    if (strcasecmp_eq(protocol, "RC5")) return RC5;
+    if (strcasecmp_eq(protocol, "RC6")) return RC6;
+    if (strcasecmp_eq(protocol, "SAMSUNG")) return SAMSUNG;
+    if (strcasecmp_eq(protocol, "LG")) return LG;
+    if (strcasecmp_eq(protocol, "PANASONIC")) return PANASONIC;
+    if (strcasecmp_eq(protocol, "SHARP")) return SHARP;
+    if (strcasecmp_eq(protocol, "JVC")) return JVC;
+    if (strcasecmp_eq(protocol, "DENON")) return DENON;
+    if (strcasecmp_eq(protocol, "DISH")) return DISH;
+    if (strcasecmp_eq(protocol, "PIONEER")) return PIONEER;
+    if (strcasecmp_eq(protocol, "LG2")) return LG2;
+    if (strcasecmp_eq(protocol, "SAMSUNG36")) return SAMSUNG36;
+    if (strcasecmp_eq(protocol, "NEC_LIKE")) return NEC_LIKE;
     
     // AC protocols (less common for TV remotes) - only include if available
     #ifdef DECODE_MITSUBISHI
-    if (proto == "MITSUBISHI") return MITSUBISHI;
+    if (strcasecmp_eq(protocol, "MITSUBISHI")) return MITSUBISHI;
     #endif
     #ifdef DECODE_COOLIX
-    if (proto == "COOLIX") return COOLIX;
+    if (strcasecmp_eq(protocol, "COOLIX")) return COOLIX;
     #endif
     #ifdef DECODE_DAIKIN
-    if (proto == "DAIKIN") return DAIKIN;
+    if (strcasecmp_eq(protocol, "DAIKIN")) return DAIKIN;
     #endif
     #ifdef DECODE_GREE
-    if (proto == "GREE") return GREE;
+    if (strcasecmp_eq(protocol, "GREE")) return GREE;
     #endif
     #ifdef DECODE_TOSHIBA_AC
-    if (proto == "TOSHIBA_AC") return TOSHIBA_AC;
+    if (strcasecmp_eq(protocol, "TOSHIBA_AC")) return TOSHIBA_AC;
     #endif
     
     return UNKNOWN;
@@ -74,24 +89,51 @@ void loadCustomCodes() {
     }
     
     File file = root.openNextFile();
+    char lineBuf[512]; // Fixed buffer for line reading
+    char fullPathBuf[256]; // Fixed buffer for file paths
+    char nameBuf[128]; // Fixed buffer for file names
+    
     while (file) {
         if (!file.isDirectory()) {
-            String name = file.name();
+            const char* name = file.name();
+            strncpy(nameBuf, name, sizeof(nameBuf) - 1);
+            nameBuf[sizeof(nameBuf) - 1] = '\0';
             
-            if (name.endsWith(".txt") && !name.endsWith(".gitkeep")) {
-                String fullPath = String("/assets/custom_codes/") + name.substring(name.lastIndexOf('/') + 1);
-                File codeFile = LittleFS.open(fullPath, "r");
+            size_t nameLen = strlen(nameBuf);
+            bool endsWithTxt = nameLen >= 4 && strcmp(nameBuf + nameLen - 4, ".txt") == 0;
+            bool endsWithGitkeep = nameLen >= 8 && strcmp(nameBuf + nameLen - 8, ".gitkeep") == 0;
+            
+            if (endsWithTxt && !endsWithGitkeep) {
+                // Extract filename from path
+                const char* filename = strrchr(name, '/');
+                if (filename) filename++;
+                else filename = name;
+                
+                snprintf(fullPathBuf, sizeof(fullPathBuf), "/assets/custom_codes/%s", filename);
+                File codeFile = LittleFS.open(fullPathBuf, "r");
                 
                 if (codeFile) {
                     while (codeFile.available()) {
-                        String line = codeFile.readStringUntil('\n');
-                        line.trim();
+                        size_t bytesRead = codeFile.readBytesUntil('\n', lineBuf, sizeof(lineBuf) - 1);
+                        lineBuf[bytesRead] = '\0';
                         
-                        if (line.length() == 0 || line.startsWith("#")) continue;
+                        // Trim whitespace
+                        size_t start = 0;
+                        while (start < bytesRead && (lineBuf[start] == ' ' || lineBuf[start] == '\t' || lineBuf[start] == '\r')) {
+                            start++;
+                        }
+                        size_t end = bytesRead;
+                        while (end > start && (lineBuf[end-1] == ' ' || lineBuf[end-1] == '\t' || lineBuf[end-1] == '\r')) {
+                            end--;
+                        }
+                        lineBuf[end] = '\0';
+                        const char* line = lineBuf + start;
+                        
+                        if (end - start == 0 || line[0] == '#') continue;
                         
                         int colons[5];
                         int colonCount = 0;
-                        for (int i = 0; i < (int)line.length() && colonCount < 5; i++) {
+                        for (int i = 0; i < (int)(end - start) && colonCount < 5; i++) {
                             if (line[i] == ':') {
                                 colons[colonCount++] = i;
                             }
@@ -99,12 +141,46 @@ void loadCustomCodes() {
                         
                         if (colonCount == 5) {
                             TVCode code;
-                            code.protocol = line.substring(0, colons[0]);
-                            code.brand = line.substring(colons[0] + 1, colons[1]);
-                            code.button = line.substring(colons[1] + 1, colons[2]);
-                            code.address = parseHex(line.substring(colons[2] + 1, colons[3]));
-                            code.command = parseHex(line.substring(colons[3] + 1, colons[4]));
-                            code.nbits = line.substring(colons[4] + 1).toInt();
+                            // Extract substrings to fixed buffers
+                            char protocolBuf[64], brandBuf[64], buttonBuf[64];
+                            char addrBuf[64], cmdBuf[64], nbitsBuf[32];
+                            
+                            size_t protocolLen = colons[0];
+                            size_t brandLen = colons[1] - colons[0] - 1;
+                            size_t buttonLen = colons[2] - colons[1] - 1;
+                            size_t addrLen = colons[3] - colons[2] - 1;
+                            size_t cmdLen = colons[4] - colons[3] - 1;
+                            size_t nbitsLen = (end - start) - colons[4] - 1;
+                            
+                            if (protocolLen >= sizeof(protocolBuf)) protocolLen = sizeof(protocolBuf) - 1;
+                            if (brandLen >= sizeof(brandBuf)) brandLen = sizeof(brandBuf) - 1;
+                            if (buttonLen >= sizeof(buttonBuf)) buttonLen = sizeof(buttonBuf) - 1;
+                            if (addrLen >= sizeof(addrBuf)) addrLen = sizeof(addrBuf) - 1;
+                            if (cmdLen >= sizeof(cmdBuf)) cmdLen = sizeof(cmdBuf) - 1;
+                            if (nbitsLen >= sizeof(nbitsBuf)) nbitsLen = sizeof(nbitsBuf) - 1;
+                            
+                            strncpy(protocolBuf, line, protocolLen);
+                            protocolBuf[protocolLen] = '\0';
+                            strncpy(brandBuf, line + colons[0] + 1, brandLen);
+                            brandBuf[brandLen] = '\0';
+                            strncpy(buttonBuf, line + colons[1] + 1, buttonLen);
+                            buttonBuf[buttonLen] = '\0';
+                            strncpy(addrBuf, line + colons[2] + 1, addrLen);
+                            addrBuf[addrLen] = '\0';
+                            strncpy(cmdBuf, line + colons[3] + 1, cmdLen);
+                            cmdBuf[cmdLen] = '\0';
+                            strncpy(nbitsBuf, line + colons[4] + 1, nbitsLen);
+                            nbitsBuf[nbitsLen] = '\0';
+                            
+                            strncpy(code.protocol, protocolBuf, sizeof(code.protocol) - 1);
+                            code.protocol[sizeof(code.protocol) - 1] = '\0';
+                            strncpy(code.brand, brandBuf, sizeof(code.brand) - 1);
+                            code.brand[sizeof(code.brand) - 1] = '\0';
+                            strncpy(code.button, buttonBuf, sizeof(code.button) - 1);
+                            code.button[sizeof(code.button) - 1] = '\0';
+                            code.address = parseHex(addrBuf);
+                            code.command = parseHex(cmdBuf);
+                            code.nbits = (uint16_t)atoi(nbitsBuf);
                             
                             customCodes.push_back(code);
                         }
@@ -121,6 +197,16 @@ void loadCustomCodes() {
     Serial.print(F("Loaded "));
     Serial.print(customCodes.size());
     Serial.println(F(" custom IR codes"));
+}
+
+static bool tvCodesLoaded = false;
+static bool customCodesLoaded = false;
+
+static void ensureCustomCodesLoaded() {
+    if (!customCodesLoaded) {
+        loadCustomCodes();
+        customCodesLoaded = true;
+    }
 }
 
 void initIRRemote() {
@@ -151,30 +237,55 @@ void initIRRemote() {
     protocolNames.push_back("SHARP");
     protocolNames.push_back("JVC");
     
-    // Load TV codes
-    loadTVCodes();
-    
-    // Load custom codes from filesystem
-    loadCustomCodes();
+    // NOTE: TV codes and custom codes are now loaded lazily when first accessed
+    // This saves significant RAM at startup (~50KB+ depending on code count)
     
     // Initialize IR receiver
     initIRReceiver();
 }
 
-// Parse hex string (with or without 0x prefix)
-uint64_t parseHex(const String& str) {
-    String s = str;
-    s.trim();
-    s.toUpperCase();
-    if (s.startsWith("0X")) {
-        s = s.substring(2);
+// Parse hex string (with or without 0x prefix) - uses fixed buffer to avoid String allocation
+uint64_t parseHex(const char* str) {
+    if (!str) return 0;
+    
+    char buf[64]; // Fixed buffer for hex parsing
+    size_t len = strlen(str);
+    if (len >= sizeof(buf)) len = sizeof(buf) - 1;
+    
+    // Trim and copy
+    size_t start = 0;
+    while (start < len && (str[start] == ' ' || str[start] == '\t' || str[start] == '\r' || str[start] == '\n')) {
+        start++;
     }
-    return strtoull(s.c_str(), nullptr, 16);
+    size_t end = len;
+    while (end > start && (str[end-1] == ' ' || str[end-1] == '\t' || str[end-1] == '\r' || str[end-1] == '\n')) {
+        end--;
+    }
+    
+    size_t copyLen = end - start;
+    if (copyLen >= sizeof(buf)) copyLen = sizeof(buf) - 1;
+    strncpy(buf, str + start, copyLen);
+    buf[copyLen] = '\0';
+    
+    // Convert to uppercase
+    for (size_t i = 0; i < copyLen; i++) {
+        if (buf[i] >= 'a' && buf[i] <= 'z') {
+            buf[i] = buf[i] - 32;
+        }
+    }
+    
+    // Skip 0x prefix
+    const char* hexStr = buf;
+    if (copyLen >= 2 && buf[0] == '0' && (buf[1] == 'x' || buf[1] == 'X')) {
+        hexStr = buf + 2;
+    }
+    
+    return strtoull(hexStr, nullptr, 16);
 }
 
 bool loadTVCodes() {
     tvCodes.clear();
-    discoveredProtocols.clear();
+    discoveredProtocolCount = 0;
     protocolPtrs.clear();
     
     File file = LittleFS.open("/assets/tv_codes.txt", "r");
@@ -184,20 +295,34 @@ bool loadTVCodes() {
     }
     
     int lineNum = 0;
+    char lineBuf[512]; // Fixed buffer for line reading
+    
     while (file.available()) {
         lineNum++;
-        String line = file.readStringUntil('\n');
-        line.trim();
+        size_t bytesRead = file.readBytesUntil('\n', lineBuf, sizeof(lineBuf) - 1);
+        lineBuf[bytesRead] = '\0';
+        
+        // Trim whitespace
+        size_t start = 0;
+        while (start < bytesRead && (lineBuf[start] == ' ' || lineBuf[start] == '\t' || lineBuf[start] == '\r')) {
+            start++;
+        }
+        size_t end = bytesRead;
+        while (end > start && (lineBuf[end-1] == ' ' || lineBuf[end-1] == '\t' || lineBuf[end-1] == '\r')) {
+            end--;
+        }
+        lineBuf[end] = '\0';
+        const char* line = lineBuf + start;
         
         // Skip empty lines and comments
-        if (line.length() == 0 || line.startsWith("#")) {
+        if (end - start == 0 || line[0] == '#') {
             continue;
         }
         
         // Parse format: protocol:brand:button:address:command:nbits
         int colons[5];
         int colonCount = 0;
-        for (int i = 0; i < (int)line.length() && colonCount < 5; i++) {
+        for (int i = 0; i < (int)(end - start) && colonCount < 5; i++) {
             if (line[i] == ':') {
                 colons[colonCount++] = i;
             }
@@ -212,12 +337,46 @@ bool loadTVCodes() {
         }
         
         TVCode code;
-        code.protocol = line.substring(0, colons[0]);
-        code.brand = line.substring(colons[0] + 1, colons[1]);
-        code.button = line.substring(colons[1] + 1, colons[2]);
-        code.address = parseHex(line.substring(colons[2] + 1, colons[3]));
-        code.command = parseHex(line.substring(colons[3] + 1, colons[4]));
-        code.nbits = line.substring(colons[4] + 1).toInt();
+        // Extract substrings to fixed buffers to avoid String allocations
+        char protocolBuf[64], brandBuf[64], buttonBuf[64];
+        char addrBuf[64], cmdBuf[64], nbitsBuf[32];
+        
+        size_t protocolLen = colons[0];
+        size_t brandLen = colons[1] - colons[0] - 1;
+        size_t buttonLen = colons[2] - colons[1] - 1;
+        size_t addrLen = colons[3] - colons[2] - 1;
+        size_t cmdLen = colons[4] - colons[3] - 1;
+        size_t nbitsLen = (end - start) - colons[4] - 1;
+        
+        if (protocolLen >= sizeof(protocolBuf)) protocolLen = sizeof(protocolBuf) - 1;
+        if (brandLen >= sizeof(brandBuf)) brandLen = sizeof(brandBuf) - 1;
+        if (buttonLen >= sizeof(buttonBuf)) buttonLen = sizeof(buttonBuf) - 1;
+        if (addrLen >= sizeof(addrBuf)) addrLen = sizeof(addrBuf) - 1;
+        if (cmdLen >= sizeof(cmdBuf)) cmdLen = sizeof(cmdBuf) - 1;
+        if (nbitsLen >= sizeof(nbitsBuf)) nbitsLen = sizeof(nbitsBuf) - 1;
+        
+        strncpy(protocolBuf, line, protocolLen);
+        protocolBuf[protocolLen] = '\0';
+        strncpy(brandBuf, line + colons[0] + 1, brandLen);
+        brandBuf[brandLen] = '\0';
+        strncpy(buttonBuf, line + colons[1] + 1, buttonLen);
+        buttonBuf[buttonLen] = '\0';
+        strncpy(addrBuf, line + colons[2] + 1, addrLen);
+        addrBuf[addrLen] = '\0';
+        strncpy(cmdBuf, line + colons[3] + 1, cmdLen);
+        cmdBuf[cmdLen] = '\0';
+        strncpy(nbitsBuf, line + colons[4] + 1, nbitsLen);
+        nbitsBuf[nbitsLen] = '\0';
+        
+        strncpy(code.protocol, protocolBuf, sizeof(code.protocol) - 1);
+        code.protocol[sizeof(code.protocol) - 1] = '\0';
+        strncpy(code.brand, brandBuf, sizeof(code.brand) - 1);
+        code.brand[sizeof(code.brand) - 1] = '\0';
+        strncpy(code.button, buttonBuf, sizeof(code.button) - 1);
+        code.button[sizeof(code.button) - 1] = '\0';
+        code.address = parseHex(addrBuf);
+        code.command = parseHex(cmdBuf);
+        code.nbits = (uint16_t)atoi(nbitsBuf);
         
         if (code.nbits == 0) {
             Serial.print(F("Warning: Invalid nbits at line "));
@@ -238,11 +397,19 @@ bool loadTVCodes() {
     return true;
 }
 
+static void ensureTVCodesLoaded() {
+    if (!tvCodesLoaded) {
+        loadTVCodes();
+        tvCodesLoaded = true;
+    }
+}
+
 TVCode* findTVCode(const char* protocol, const char* brand, const char* button) {
+    ensureTVCodesLoaded();
     for (size_t i = 0; i < tvCodes.size(); i++) {
-        if (tvCodes[i].protocol.equalsIgnoreCase(protocol) &&
-            tvCodes[i].brand.equalsIgnoreCase(brand) &&
-            tvCodes[i].button.equalsIgnoreCase(button)) {
+        if (strcasecmp_eq(tvCodes[i].protocol, protocol) &&
+            strcasecmp_eq(tvCodes[i].brand, brand) &&
+            strcasecmp_eq(tvCodes[i].button, button)) {
             return &tvCodes[i];
         }
     }
@@ -254,41 +421,48 @@ TVCode* findTVCode(const char* protocol, const char* button) {
 }
 
 const TVCode* getAllTVCodes() {
+    ensureTVCodesLoaded();
     return tvCodes.data();
 }
 
 uint16_t getTVCodeCount() {
+    ensureTVCodesLoaded();
     return tvCodes.size();
 }
 
 // Dynamically discover protocols from loaded codes
 const char** getIRProtocols() {
+    ensureTVCodesLoaded();
     // Always rebuild to include Custom at start and refresh folder list
-    discoveredProtocols.clear();
+    discoveredProtocolCount = 0;
     
     // Add "Custom" protocol at the start
-    discoveredProtocols.push_back("Custom");
+    strncpy(discoveredProtocols[discoveredProtocolCount], "Custom", sizeof(discoveredProtocols[0]) - 1);
+    discoveredProtocols[discoveredProtocolCount][sizeof(discoveredProtocols[0]) - 1] = '\0';
+    discoveredProtocolCount++;
     
     // Extract unique protocols from loaded codes
-    if (tvCodes.size() > 0) {
+    if (tvCodes.size() > 0 && discoveredProtocolCount < (int)(sizeof(discoveredProtocols) / sizeof(discoveredProtocols[0]))) {
         for (size_t i = 0; i < tvCodes.size(); i++) {
             bool found = false;
-            for (const auto& p : discoveredProtocols) {
-                if (p.equalsIgnoreCase(tvCodes[i].protocol)) {
+            for (int j = 0; j < discoveredProtocolCount; j++) {
+                if (strcasecmp_eq(discoveredProtocols[j], tvCodes[i].protocol)) {
                     found = true;
                     break;
                 }
             }
-            if (!found) {
-                discoveredProtocols.push_back(tvCodes[i].protocol);
+            if (!found && discoveredProtocolCount < (int)(sizeof(discoveredProtocols) / sizeof(discoveredProtocols[0]))) {
+                strncpy(discoveredProtocols[discoveredProtocolCount], tvCodes[i].protocol, sizeof(discoveredProtocols[0]) - 1);
+                discoveredProtocols[discoveredProtocolCount][sizeof(discoveredProtocols[0]) - 1] = '\0';
+                discoveredProtocolCount++;
             }
         }
     }
     
-    // Convert to C-style array (pointers to String objects that persist)
+    // Convert to C-style array (pointers to char arrays that persist)
     protocolPtrs.clear();
-    for (const auto& p : discoveredProtocols) {
-        protocolPtrs.push_back(p.c_str());
+    for (int i = 0; i < discoveredProtocolCount; i++) {
+        protocolPtrs.push_back(discoveredProtocols[i]);
     }
     protocolPtrs.push_back(nullptr); // null terminator
     
@@ -320,18 +494,17 @@ bool sendTVCode(const TVCode* code, uint16_t repeat) {
     if (!code) return false;
     
     uint64_t data;
-    
-    // Protocol-specific data formatting
-    if (code->protocol.equalsIgnoreCase("NEC")) {
+    // Protocol-specific data formatting - use strcasecmp_eq to avoid String allocations
+    if (strcasecmp_eq(code->protocol, "NEC")) {
         // NEC: combine address (16 bits) and command (8 bits)
         data = ((uint64_t)code->address << 16) | (code->command & 0xFF);
-    } else if (code->protocol.equalsIgnoreCase("PANASONIC")) {
+    } else if (strcasecmp_eq(code->protocol, "PANASONIC")) {
         // Panasonic: address (16 bits) + data (32 bits), but send() takes combined
         data = ((uint64_t)code->address << 32) | code->command;
-    } else if (code->protocol.equalsIgnoreCase("SHARP")) {
+    } else if (strcasecmp_eq(code->protocol, "SHARP")) {
         // Sharp: address (5 bits) + command (8 bits)
         data = ((uint64_t)code->address << 8) | (code->command & 0xFF);
-    } else if (code->protocol.equalsIgnoreCase("RC5") || code->protocol.equalsIgnoreCase("RC6")) {
+    } else if (strcasecmp_eq(code->protocol, "RC5") || strcasecmp_eq(code->protocol, "RC6")) {
         // RC5/RC6: address and command combined
         data = ((uint64_t)code->address << 6) | (code->command & 0x3F);
     } else {
@@ -339,7 +512,7 @@ bool sendTVCode(const TVCode* code, uint16_t repeat) {
         data = code->command;
     }
     
-    return sendIR(code->protocol.c_str(), data, code->nbits, repeat);
+    return sendIR(code->protocol, data, code->nbits, repeat);
 }
 
 // Legacy functions for backward compatibility
@@ -387,14 +560,25 @@ bool scanIRCode(uint32_t timeoutMs, TVCode* outCode, char* protocolName, size_t 
     
     while (millis() - startTime < timeoutMs) {
         if (irrecv.decode(&results)) {
-            // Convert decode_type_t to string
+            // Convert decode_type_t to string - use fixed buffer to avoid String allocation
+            // typeToString returns a String, so we need to extract it to a char buffer
             String protoStr = typeToString(results.decode_type);
-            protoStr.toUpperCase();
-            strncpy(protocolName, protoStr.c_str(), protocolNameLen - 1);
-            protocolName[protocolNameLen - 1] = '\0';
+            const char* protoCStr = protoStr.c_str();
             
-            // Extract address and command based on protocol
-            outCode->protocol = protoStr;
+            // Copy and convert to uppercase in fixed buffer
+            size_t len = strlen(protoCStr);
+            if (len >= protocolNameLen) len = protocolNameLen - 1;
+            
+            for (size_t i = 0; i < len; i++) {
+                char c = protoCStr[i];
+                protocolName[i] = (c >= 'a' && c <= 'z') ? (c - 32) : c;
+            }
+            protocolName[len] = '\0';
+            
+            // Store in TVCode (fixed-size char array copy)
+            strncpy(outCode->protocol, protocolName, sizeof(outCode->protocol) - 1);
+            outCode->protocol[sizeof(outCode->protocol) - 1] = '\0';
+            
             outCode->nbits = results.bits;
             
             if (results.decode_type == NEC) {
@@ -420,8 +604,8 @@ bool scanIRCode(uint32_t timeoutMs, TVCode* outCode, char* protocolName, size_t 
                 outCode->command = results.value;
             }
             
-            outCode->brand = ""; // Will be set when saving
-            outCode->button = ""; // Will be set when saving
+            outCode->brand[0] = '\0'; // Will be set when saving
+            outCode->button[0] = '\0'; // Will be set when saving
             
             irrecv.resume();
             return true;
@@ -436,8 +620,10 @@ bool saveCustomCode(const char* folderName, const char* buttonName, const TVCode
     if (!folderName || !buttonName || !code) return false;
     
     TVCode newCode = *code;
-    newCode.brand = String(folderName);
-    newCode.button = String(buttonName);
+    strncpy(newCode.brand, folderName, sizeof(newCode.brand) - 1);
+    newCode.brand[sizeof(newCode.brand) - 1] = '\0';
+    strncpy(newCode.button, buttonName, sizeof(newCode.button) - 1);
+    newCode.button[sizeof(newCode.button) - 1] = '\0';
     
     customCodes.push_back(newCode);
     
@@ -449,7 +635,8 @@ bool saveCustomCode(const char* folderName, const char* buttonName, const TVCode
         LittleFS.mkdir("/assets/custom_codes");
     }
     
-    String filePath = String("/assets/custom_codes/") + folderName + ".txt";
+    char filePath[256];
+    snprintf(filePath, sizeof(filePath), "/assets/custom_codes/%s.txt", folderName);
     
     // Always use write mode if file doesn't exist, append mode if it does
     File file;
@@ -481,20 +668,21 @@ bool saveCustomCode(const char* folderName, const char* buttonName, const TVCode
     return false;
 }
 
-std::vector<String> getCustomFolders() {
-    std::vector<String> folders;
+std::vector<std::string> getCustomFolders() {
+    ensureCustomCodesLoaded();
+    std::vector<std::string> folders;
     
     // First, add folders from in-memory codes
     for (size_t i = 0; i < customCodes.size(); i++) {
         bool found = false;
         for (const auto& f : folders) {
-            if (f.equalsIgnoreCase(customCodes[i].brand)) {
+            if (strcasecmp_eq(f.c_str(), customCodes[i].brand)) {
                 found = true;
                 break;
             }
         }
-        if (!found && customCodes[i].brand.length() > 0) {
-            folders.push_back(customCodes[i].brand);
+        if (!found && strlen(customCodes[i].brand) > 0) {
+            folders.push_back(std::string(customCodes[i].brand));
         }
     }
     
@@ -509,31 +697,38 @@ std::vector<String> getCustomFolders() {
     }
     
     File file = root.openNextFile();
+    char nameBuf[256];
+    char folderNameBuf[128];
+    
     while (file) {
         if (!file.isDirectory()) {
-            String name = file.name();
+            const char* name = file.name();
+            strncpy(nameBuf, name, sizeof(nameBuf) - 1);
+            nameBuf[sizeof(nameBuf) - 1] = '\0';
             
-            if (!name.endsWith(".gitkeep")) {
-                int lastSlash = name.lastIndexOf('/');
-                int lastDot = name.lastIndexOf('.');
+            size_t nameLen = strlen(nameBuf);
+            bool endsWithGitkeep = nameLen >= 8 && strcmp(nameBuf + nameLen - 8, ".gitkeep") == 0;
+            
+            if (!endsWithGitkeep) {
+                const char* lastSlash = strrchr(nameBuf, '/');
+                const char* lastDot = strrchr(nameBuf, '.');
                 
-                String folderName;
-                if (lastSlash >= 0 && lastDot > lastSlash) {
-                    folderName = name.substring(lastSlash + 1, lastDot);
-                } else if (lastDot > 0) {
-                    folderName = name.substring(0, lastDot);
-                }
-                
-                if (folderName.length() > 0) {
-                    bool found = false;
-                    for (const auto& f : folders) {
-                        if (f.equalsIgnoreCase(folderName)) {
-                            found = true;
-                            break;
+                if (lastDot && (!lastSlash || lastDot > lastSlash)) {
+                    size_t folderNameLen = lastDot - (lastSlash ? (lastSlash + 1) : nameBuf);
+                    if (folderNameLen > 0 && folderNameLen < sizeof(folderNameBuf)) {
+                        strncpy(folderNameBuf, lastSlash ? (lastSlash + 1) : nameBuf, folderNameLen);
+                        folderNameBuf[folderNameLen] = '\0';
+                        
+                        bool found = false;
+                        for (const auto& f : folders) {
+                            if (strcasecmp_eq(f.c_str(), folderNameBuf)) {
+                                found = true;
+                                break;
+                            }
                         }
-                    }
-                    if (!found) {
-                        folders.push_back(folderName);
+                        if (!found && strlen(folderNameBuf) > 0) {
+                            folders.push_back(std::string(folderNameBuf));
+                        }
                     }
                 }
             }
@@ -547,11 +742,12 @@ std::vector<String> getCustomFolders() {
 }
 
 std::vector<const TVCode*> getCustomCodes(const char* folderName) {
+    ensureCustomCodesLoaded();
     std::vector<const TVCode*> codes;
     
-    // Search in memory (codes are already loaded at startup)
+    // Search in memory (codes are loaded lazily when first accessed)
     for (size_t i = 0; i < customCodes.size(); i++) {
-        if (customCodes[i].brand.equalsIgnoreCase(folderName)) {
+        if (strcasecmp_eq(customCodes[i].brand, folderName)) {
             codes.push_back(&customCodes[i]);
         }
     }
@@ -571,7 +767,8 @@ bool createCustomFolder(const char* folderName) {
         if (!LittleFS.mkdir("/assets/custom_codes")) return false;
     }
     
-    String filePath = String("/assets/custom_codes/") + folderName + ".txt";
+    char filePath[256];
+    snprintf(filePath, sizeof(filePath), "/assets/custom_codes/%s.txt", folderName);
     
     if (LittleFS.exists(filePath)) {
         return true;
@@ -597,12 +794,13 @@ bool createCustomFolder(const char* folderName) {
 bool deleteCustomFolder(const char* folderName) {
     if (!folderName) return false;
     
-    String filePath = String("/assets/custom_codes/") + folderName + ".txt";
+    char filePath[256];
+    snprintf(filePath, sizeof(filePath), "/assets/custom_codes/%s.txt", folderName);
     
     if (LittleFS.remove(filePath)) {
         // Remove from memory
         for (size_t i = 0; i < customCodes.size(); ) {
-            if (customCodes[i].brand.equalsIgnoreCase(folderName)) {
+            if (strcasecmp_eq(customCodes[i].brand, folderName)) {
                 customCodes.erase(customCodes.begin() + i);
             } else {
                 i++;
@@ -619,8 +817,8 @@ bool deleteCustomCode(const char* folderName, const char* buttonName) {
     
     // Remove from memory
     for (size_t i = 0; i < customCodes.size(); ) {
-        if (customCodes[i].brand.equalsIgnoreCase(folderName) &&
-            customCodes[i].button.equalsIgnoreCase(buttonName)) {
+        if (strcasecmp_eq(customCodes[i].brand, folderName) &&
+            strcasecmp_eq(customCodes[i].button, buttonName)) {
             customCodes.erase(customCodes.begin() + i);
         } else {
             i++;
@@ -628,32 +826,53 @@ bool deleteCustomCode(const char* folderName, const char* buttonName) {
     }
     
     // Rewrite the file without the deleted code
-    String filePath = String("/assets/custom_codes/") + folderName + ".txt";
+    char filePath[256];
+    snprintf(filePath, sizeof(filePath), "/assets/custom_codes/%s.txt", folderName);
     File readFile = LittleFS.open(filePath, "r");
     if (!readFile) return false;
     
-    std::vector<String> lines;
+    std::vector<std::string> lines;
+    char lineBuf[512];
+    char lineButtonBuf[128];
+    
     while (readFile.available()) {
-        String line = readFile.readStringUntil('\n');
-        line.trim();
+        size_t bytesRead = readFile.readBytesUntil('\n', lineBuf, sizeof(lineBuf) - 1);
+        lineBuf[bytesRead] = '\0';
         
-        if (line.length() > 0 && !line.startsWith("#")) {
+        // Trim whitespace
+        size_t start = 0;
+        while (start < bytesRead && (lineBuf[start] == ' ' || lineBuf[start] == '\t' || lineBuf[start] == '\r')) {
+            start++;
+        }
+        size_t end = bytesRead;
+        while (end > start && (lineBuf[end-1] == ' ' || lineBuf[end-1] == '\t' || lineBuf[end-1] == '\r')) {
+            end--;
+        }
+        lineBuf[end] = '\0';
+        const char* line = lineBuf + start;
+        
+        if (end - start > 0 && line[0] == '#') {
+            lines.push_back(std::string(line)); // Comments - keep as-is
+        } else if (end - start > 0) {
             int colons[5];
             int colonCount = 0;
-            for (int i = 0; i < (int)line.length() && colonCount < 5; i++) {
+            for (int i = 0; i < (int)(end - start) && colonCount < 5; i++) {
                 if (line[i] == ':') {
                     colons[colonCount++] = i;
                 }
             }
             
             if (colonCount == 5) {
-                String lineButton = line.substring(colons[1] + 1, colons[2]);
-                if (!lineButton.equalsIgnoreCase(buttonName)) {
-                    lines.push_back(line);
+                // Extract button name to fixed buffer for comparison
+                size_t buttonLen = colons[2] - colons[1] - 1;
+                if (buttonLen >= sizeof(lineButtonBuf)) buttonLen = sizeof(lineButtonBuf) - 1;
+                strncpy(lineButtonBuf, line + colons[1] + 1, buttonLen);
+                lineButtonBuf[buttonLen] = '\0';
+                
+                if (!strcasecmp_eq(lineButtonBuf, buttonName)) {
+                    lines.push_back(std::string(line)); // Keep line if button doesn't match
                 }
             }
-        } else if (line.startsWith("#")) {
-            lines.push_back(line);
         }
     }
     readFile.close();
@@ -662,7 +881,7 @@ bool deleteCustomCode(const char* folderName, const char* buttonName) {
     if (!writeFile) return false;
     
     for (const auto& line : lines) {
-        writeFile.println(line);
+        writeFile.println(line.c_str());
     }
     writeFile.close();
     

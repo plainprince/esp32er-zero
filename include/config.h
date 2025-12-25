@@ -30,7 +30,7 @@
 
     // ! ===== EPAPER_USE_FULL_UPDATE (controls e-paper update mode: 0=partial update, 1=full update) (when DISPLAY_TYPE is EPAPER or DUAL with EPAPER_BW mode) =====
     #ifndef EPAPER_USE_FULL_UPDATE
-        #define EPAPER_USE_FULL_UPDATE 0
+        #define EPAPER_USE_FULL_UPDATE 1
     #endif
 
     // ! ===== RENDER_QUEUE_SETTLE_MS (delay in milliseconds for render queue to settle before refresh) (when EPAPER with partial updates) =====

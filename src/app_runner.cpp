@@ -3,6 +3,7 @@
 #include "controls.h"
 #include "menu.h"
 #include <LittleFS.h>
+#include <string>
 
 
 AppRenderFunc currentApp = nullptr;
@@ -11,7 +12,7 @@ bool appIsRunning = false;
 
 static const char* tvTitle = nullptr;
 static const char* tvContent = nullptr;
-static String tvContentBuffer; 
+static std::string tvContentBuffer; 
 static int tvScrollOffset = 0;
 
 void startApp(AppRenderFunc app) {
@@ -49,6 +50,7 @@ bool runAppFrame() {
 
 
 
+
 void setTextViewerContent(const char* title, const char* content) {
     tvTitle = title;
     tvContent = content;
@@ -57,15 +59,15 @@ void setTextViewerContent(const char* title, const char* content) {
 
 void setTextViewerFile(const char* title, const char* filePath) {
     
-    String cleanTitle = title;
+    std::string cleanTitle = title;
     
     for (int i = cleanTitle.length() - 1; i >= 0; i--) {
         char c = cleanTitle[i];
         if (c < 32 || c > 126) {
-            cleanTitle.remove(i, 1);
+            cleanTitle.erase(i, 1);
         }
     }
-    static String titleBuffer;
+    static std::string titleBuffer;
     titleBuffer = cleanTitle;
     tvTitle = titleBuffer.c_str();
     
@@ -76,11 +78,14 @@ void setTextViewerFile(const char* title, const char* filePath) {
     if (file) {
         
         tvContentBuffer = "";
+        char buffer[128];
         while (file.available() && tvContentBuffer.length() < 4096) {
-            char c = file.read();
-            
-            if (c >= 32 || c == '\n' || c == '\t' || c == '\r') {
-                tvContentBuffer += c;
+            int n = file.readBytes(buffer, sizeof(buffer));
+            for(int i=0; i<n; i++) {
+                char c = buffer[i];
+                if (c >= 32 || c == '\n' || c == '\t' || c == '\r') {
+                    tvContentBuffer += c;
+                }
             }
         }
         if (file.available()) {
@@ -89,7 +94,7 @@ void setTextViewerFile(const char* title, const char* filePath) {
         file.close();
         tvContent = tvContentBuffer.c_str();
     } else {
-        tvContentBuffer = "(File not found: " + String(filePath) + ")";
+        tvContentBuffer = "(File not found: " + std::string(filePath) + ")";
         tvContent = tvContentBuffer.c_str();
     }
     
@@ -220,6 +225,7 @@ AppState textViewerApp() {
 
 
 
+
 static const char* aboutText = 
     "Flipper Zero UI Clone\n"
     "Version: 1.0.0\n"
@@ -240,11 +246,14 @@ static const char* aboutText =
 
 AppState aboutApp() {
     static bool initialized = false;
-    static String loadedAboutText = "";
+    static std::string loadedAboutText = "";
     
     if (!initialized) {
         
-        loadedAboutText = loadAboutText();
+        // Convert from String (returned by loadAboutText) to std::string
+        String s = loadAboutText();
+        loadedAboutText = std::string(s.c_str());
+        
         if (loadedAboutText.length() == 0) {
             loadedAboutText = aboutText;
         }
@@ -261,4 +270,3 @@ AppState aboutApp() {
     
     return state;
 }
-

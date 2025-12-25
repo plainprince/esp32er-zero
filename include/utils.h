@@ -45,6 +45,8 @@ void showLoadingMessage(const char* message);
 
 
 
+extern bool ledInitialized;
+
 void initStatusLED();
 
 
@@ -97,7 +99,7 @@ int getTextHeight();
 String loadAboutText();
 
 
-bool loadLoadingScreen();
+void freeLoadingScreen();
 
 
 void showLoadingScreenOverlay(const char* text = nullptr);
@@ -108,5 +110,4 @@ void hideLoadingScreenOverlay();
 
 bool isLoadingScreenVisible();
 
-#endif 
-
+#endif

@@ -1,5 +1,9 @@
 #include "utils.h"
 #include "config.h"
+#include <string.h>
+#include <string>
+#include <algorithm>
+#include <memory>
 
 
 const int BASE_CHAR_WIDTH = 6;
@@ -231,11 +235,12 @@ void showLoadingMessage(const char* message) {
 
 
 
+
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 2
 #endif
 
-static bool ledInitialized = false;
+bool ledInitialized = false;
 
 void initStatusLED() {
     pinMode(LED_BUILTIN, OUTPUT);
@@ -254,6 +259,7 @@ void setLEDReady() {
         digitalWrite(LED_BUILTIN, LOW);  
     }
 }
+
 
 
 
@@ -285,11 +291,16 @@ void releaseDisplayLock() {
 
 
 
+
 static QueueHandle_t renderQueue = NULL;
 static TaskHandle_t renderTaskHandle = NULL;
 static volatile bool renderQueueInitialized = false;
 static volatile bool renderBusy = false;
 static SemaphoreHandle_t initMutex = NULL;
+
+// Loading screen state (declared early so requestDisplayRefresh can access it)
+static bool loadingScreenVisible = false;
+static bool loadingScreenNeedsFlush = false;
 
 
 
@@ -378,6 +389,19 @@ void initRenderQueue() {
 }
 
 void requestDisplayRefresh() {
+    // If loading screen is visible and was just drawn, flush it once and skip queue
+    if (loadingScreenVisible && loadingScreenNeedsFlush) {
+        // Flush the loading screen once, then clear the flag
+        if (display) {
+            acquireDisplayLock();
+            setLEDBusy();
+            display->display();
+            setLEDReady();
+            releaseDisplayLock();
+        }
+        loadingScreenNeedsFlush = false;
+        return;
+    }
     
     if (!renderQueueInitialized) {
         initRenderQueue();
@@ -419,21 +443,20 @@ bool isRenderPending() {
 
 
 
+
 #include <LittleFS.h>
 
 
-static uint8_t* loadingScreenData = nullptr;
-static int loadingScreenWidth = 0;
-static int loadingScreenHeight = 0;
-static bool loadingScreenVisible = false;
 
-String loadAboutText() {
+String loadAboutText() { // Keep String for now as caller might expect it, or update header
     File file = LittleFS.open("/assets/about.txt", "r");
     if (!file) {
         Serial.println(F("Failed to open /assets/about.txt"));
         return "";
     }
     
+    // Read to String buffer (Arduino String is still convenient for file reading if we convert immediately)
+    // But better to use loop
     String content = file.readString();
     file.close();
     
@@ -444,114 +467,169 @@ String loadAboutText() {
     return content;
 }
 
-bool loadLoadingScreen() {
+// Structure to hold loading screen data - returned by loadLoadingScreen()
+struct LoadingScreenData {
+    std::unique_ptr<uint8_t[]> data;
+    int width;
+    int height;
+    size_t size;
+    
+    LoadingScreenData() : data(nullptr), width(0), height(0), size(0) {}
+    
+    bool isValid() const {
+        return data != nullptr && width > 0 && height > 0;
+    }
+    
+    // Clear the data - smart pointer will automatically free memory
+    void clear() {
+        data.reset();
+        width = 0;
+        height = 0;
+        size = 0;
+    }
+};
+
+// Static cache for loading screen data - REMOVED to save memory
+// Data is now loaded on demand and freed immediately
+// static LoadingScreenData cachedLoadingScreenData;
+
+// Load loading screen data - returns a struct with smart pointer for automatic cleanup
+static LoadingScreenData loadLoadingScreen() {
+    LoadingScreenData result;
+    
     File file = LittleFS.open("/assets/loading_screen.txt", "r");
     if (!file) {
         Serial.println(F("Failed to open /assets/loading_screen.txt (optional)"));
-        return false;
+        return result;
     }
     
+    // Read header without using String to avoid heap fragmentation
+    char headerBuf[64];
+    size_t headerIdx = 0;
+    while (file.available() && headerIdx < sizeof(headerBuf) - 1) {
+        char c = file.read();
+        if (c == '\n') break;
+        headerBuf[headerIdx++] = c;
+    }
+    headerBuf[headerIdx] = '\0';
     
-    String line = file.readStringUntil('\n');
-    int spacePos = line.indexOf(' ');
-    if (spacePos <= 0) {
+    // Parse dimensions
+    char* spacePtr = strchr(headerBuf, ' ');
+    if (!spacePtr) {
         file.close();
         Serial.println(F("Invalid loading screen format"));
-        return false;
+        return result;
     }
+    *spacePtr = '\0'; // Split string at space
     
-    loadingScreenWidth = line.substring(0, spacePos).toInt();
-    loadingScreenHeight = line.substring(spacePos + 1).toInt();
+    result.width = atoi(headerBuf);
+    result.height = atoi(spacePtr + 1);
     
-    if (loadingScreenWidth <= 0 || loadingScreenHeight <= 0 || 
-        loadingScreenWidth > 512 || loadingScreenHeight > 512) {
+    if (result.width <= 0 || result.height <= 0 || 
+        result.width > 512 || result.height > 512) {
         file.close();
         Serial.println(F("Invalid loading screen dimensions"));
-        return false;
+        return result;
     }
     
+    result.size = result.width * result.height;
     
-    size_t dataSize = loadingScreenWidth * loadingScreenHeight;
-    if (loadingScreenData) {
-        free(loadingScreenData);
-    }
-    loadingScreenData = (uint8_t*)malloc(dataSize);
-    
-    if (!loadingScreenData) {
+    // Allocate using smart pointer - automatically freed when out of scope
+    result.data = std::unique_ptr<uint8_t[]>(new uint8_t[result.size]);
+    if (!result.data) {
         file.close();
         Serial.println(F("Failed to allocate memory for loading screen"));
-        return false;
+        return result;
     }
     
+    // Read directly into buffer
+    int pixelsRead = 0;
+    int targetPixels = result.size;
     
+    // Use a small buffer for reading to improve performance over single-byte reads
+    const int BUF_SIZE = 64;
+    uint8_t buf[BUF_SIZE];
     
-    String allData = file.readString();
-    file.close();
-    
-    
-    allData.trim();
-    
-    
-    int expectedPixels = loadingScreenWidth * loadingScreenHeight;
-    if (allData.length() < (unsigned int)expectedPixels) {
-        Serial.print(F("Error: Loading screen file has insufficient data: "));
-        Serial.print(allData.length());
-        Serial.print(F(" bytes, expected at least "));
-        Serial.print(expectedPixels);
-        Serial.println(F(" bytes"));
-        free(loadingScreenData);
-        loadingScreenData = nullptr;
-        loadingScreenWidth = 0;
-        loadingScreenHeight = 0;
-        return false;
-    }
-    
-    
-    int dataIdx = 0;
-    for (int y = 0; y < loadingScreenHeight; y++) {
-        for (int x = 0; x < loadingScreenWidth; x++) {
-            if (dataIdx < (int)allData.length()) {
-                char pixel = allData[dataIdx];
-                
-                while (dataIdx < (int)allData.length() && (pixel == '\n' || pixel == '\r' || pixel == ' ' || pixel == '\t')) {
-                    dataIdx++;
-                    if (dataIdx < (int)allData.length()) {
-                        pixel = allData[dataIdx];
-                    }
-                }
-                if (dataIdx < (int)allData.length()) {
-                    loadingScreenData[y * loadingScreenWidth + x] = (pixel == '1') ? 1 : 0;
-                    dataIdx++;
-                } else {
-                    loadingScreenData[y * loadingScreenWidth + x] = 0;
-                }
-            } else {
-                loadingScreenData[y * loadingScreenWidth + x] = 0;
+    while (file.available() && pixelsRead < targetPixels) {
+        int n = file.read(buf, BUF_SIZE);
+        for (int i = 0; i < n && pixelsRead < targetPixels; i++) {
+            char c = (char)buf[i];
+            // Skip whitespace
+            if (c != '\n' && c != '\r' && c != ' ' && c != '\t') {
+                result.data[pixelsRead++] = (c == '1') ? 1 : 0;
             }
         }
     }
     
+    file.close();
+    
+    
+    if (pixelsRead < targetPixels) {
+        Serial.print(F("Warning: Loading screen file has insufficient data: "));
+        Serial.print(pixelsRead);
+        Serial.print(F(" pixels, expected "));
+        Serial.println(targetPixels);
+        
+        // Fill remaining with 0
+        while (pixelsRead < targetPixels) {
+            result.data[pixelsRead++] = 0;
+        }
+    }
     
     Serial.print(F("Loaded loading screen: "));
-    Serial.print(loadingScreenWidth);
+    Serial.print(result.width);
     Serial.print(F("x"));
-    Serial.print(loadingScreenHeight);
+    Serial.print(result.height);
     Serial.print(F(" ("));
-    Serial.print(dataSize);
+    Serial.print(result.size);
     Serial.println(F(" bytes)"));
     
-    return true;
+    return result;
+}
+
+void freeLoadingScreen() {
+    // Clear visibility flags only
+    // Data is automatically freed immediately after use in showLoadingScreenOverlay
+    loadingScreenVisible = false;
+    loadingScreenNeedsFlush = false;
 }
 
 void showLoadingScreenOverlay(const char* text) {
-    if (!display || !loadingScreenData || loadingScreenWidth == 0 || loadingScreenHeight == 0) {
+    static char lastLoadingText[64] = "";
+    
+    // Check if already visible with same text to avoid redraw
+    if (loadingScreenVisible) {
+        if ((text == nullptr && lastLoadingText[0] == '\0') || 
+            (text != nullptr && strncmp(text, lastLoadingText, sizeof(lastLoadingText)) == 0)) {
+            // Already showing the same loading screen, no need to redraw
+            return;
+        }
+    }
+
+    // Load loading screen data immediately on stack - freed when function returns
+    LoadingScreenData screenData = loadLoadingScreen();
+    
+    if (!screenData.isValid()) {
+        return; // Failed to load
+    }
+    
+    if (!display) {
         return;
     }
     
     acquireDisplayLock();
     
-    loadingScreenVisible = true;
+    // Update text tracking before drawing
+    if (text) {
+        strncpy(lastLoadingText, text, sizeof(lastLoadingText) - 1);
+        lastLoadingText[sizeof(lastLoadingText) - 1] = '\0';
+    } else {
+        lastLoadingText[0] = '\0';
+    }
     
+    // Set visible flag and mark that we need to flush
+    loadingScreenVisible = true;
+    loadingScreenNeedsFlush = true;
     
     if (!display) {
         releaseDisplayLock();
@@ -572,12 +650,12 @@ void showLoadingScreenOverlay(const char* text) {
     }
     
     
-    float scaleX = (float)displayWidth / loadingScreenWidth;
-    float scaleY = (float)displayHeight / loadingScreenHeight;
+    float scaleX = (float)displayWidth / screenData.width;
+    float scaleY = (float)displayHeight / screenData.height;
     float scale = max(scaleX, scaleY);  
     
-    int scaledWidth = (int)(loadingScreenWidth * scale);
-    int scaledHeight = (int)(loadingScreenHeight * scale);
+    int scaledWidth = (int)(screenData.width * scale);
+    int scaledHeight = (int)(screenData.height * scale);
     
     
     int offsetX = (displayWidth - scaledWidth) / 2;
@@ -586,14 +664,14 @@ void showLoadingScreenOverlay(const char* text) {
     
     for (int y = 0; y < scaledHeight; y++) {
         int srcY = (int)(y / scale);
-        if (srcY >= loadingScreenHeight) break;
+        if (srcY >= screenData.height) break;
         
         for (int x = 0; x < scaledWidth; x++) {
             int srcX = (int)(x / scale);
-            if (srcX >= loadingScreenWidth) break;
+            if (srcX >= screenData.width) break;
             
-            int pixelIdx = srcY * loadingScreenWidth + srcX;
-            if (pixelIdx < loadingScreenWidth * loadingScreenHeight && loadingScreenData[pixelIdx] == 1) {
+            int pixelIdx = srcY * screenData.width + srcX;
+            if (pixelIdx < screenData.size && screenData.data[pixelIdx] == 1) {
                 int drawX = offsetX + x;
                 int drawY = offsetY + y;
                 
@@ -619,16 +697,19 @@ void showLoadingScreenOverlay(const char* text) {
         display->print(text);
     }
     
+    // Don't flush here - let display.refresh() handle it to avoid multiple renders
+    // The loading screen will be flushed when display.refresh() is called
+    
     releaseDisplayLock();
 }
 
 void hideLoadingScreenOverlay() {
     loadingScreenVisible = false;
-    
-    
+    loadingScreenNeedsFlush = false;
+    // Don't free the loading screen here to avoid memory fragmentation
+    // It will be freed when the app exits via freeLoadingScreen()
 }
 
 bool isLoadingScreenVisible() {
     return loadingScreenVisible;
 }
-

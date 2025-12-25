@@ -5,6 +5,8 @@
 #include <LittleFS.h>
 #include <FlipperDisplay.h>
 #include <vector>
+#include <string>
+#include <algorithm>
 
 extern FlipperDisplay* display;
 
@@ -20,13 +22,13 @@ static void drawEntryIcon(const Icon* icon, bool selected) {
 }
 
 
-static String rootPath = "/storage";
-static String currentPath = "/storage";
+static std::string rootPath = "/storage";
+static std::string currentPath = "/storage";
 static int selectedIndex = 0;
 static int scrollOffset = 0;
 
 struct FileEntry {
-    String name;
+    std::string name;
     bool isDir;
     size_t size;
 };
@@ -40,17 +42,17 @@ void setFileExplorerRoot(const char* path) {
     scrollOffset = 0;
 }
 
-String getFileExplorerPath() {
+std::string getFileExplorerPath() {
     return currentPath;
 }
 
 static void loadDirectory() {
     entries.clear();
     
-    File dir = LittleFS.open(currentPath);
+    File dir = LittleFS.open(currentPath.c_str());
     if (!dir || !dir.isDirectory()) {
         Serial.print(F("Failed to open directory: "));
-        Serial.println(currentPath);
+        Serial.println(currentPath.c_str());
         return;
     }
     
@@ -58,6 +60,13 @@ static void loadDirectory() {
     while (entry) {
         FileEntry fe;
         fe.name = entry.name();
+        
+        // Remove path prefix if present
+        size_t lastSlash = fe.name.rfind('/');
+        if (lastSlash != std::string::npos) {
+            fe.name = fe.name.substr(lastSlash + 1);
+        }
+        
         fe.isDir = entry.isDirectory();
         fe.size = entry.size();
         entries.push_back(fe);
@@ -73,7 +82,7 @@ static void loadDirectory() {
     Serial.print(F("Loaded "));
     Serial.print(entries.size());
     Serial.print(F(" entries from "));
-    Serial.println(currentPath);
+    Serial.println(currentPath.c_str());
 }
 
 static void renderExplorer() {
@@ -85,9 +94,9 @@ static void renderExplorer() {
     resetCursor();
     
     
-    String header = currentPath;
+    std::string header = currentPath;
     if (header.length() > 20) {
-        header = "..." + header.substring(header.length() - 17);
+        header = "..." + header.substr(header.length() - 17);
     }
     customPrintln(header.c_str(), false);
     
@@ -149,14 +158,15 @@ static void renderExplorer() {
             }
             
             
-            String line = entry.name;
+            std::string line = entry.name;
             if (!entry.isDir) {
-                
+                char sizeBuf[32];
                 if (entry.size < 1024) {
-                    line += " (" + String(entry.size) + "B)";
+                    snprintf(sizeBuf, sizeof(sizeBuf), " (%uB)", (unsigned int)entry.size);
                 } else {
-                    line += " (" + String(entry.size / 1024) + "K)";
+                    snprintf(sizeBuf, sizeof(sizeBuf), " (%uK)", (unsigned int)(entry.size / 1024));
                 }
+                line += sizeBuf;
             }
             
             
@@ -183,28 +193,36 @@ static void renderExplorer() {
     requestDisplayRefresh();
 }
 
-static String readFileContent(const String& path) {
+static bool startsWith(const std::string& str, const std::string& prefix) {
+    return str.rfind(prefix, 0) == 0;
+}
+
+static std::string readFileContent(const std::string& path) {
     
-    String actualPath = path;
+    std::string actualPath = path;
     if (path == "/Settings/Documentation/About") {
         actualPath = "/assets/about.txt";
     } else if (path == "/Settings/Documentation/Lua Docs") {
         actualPath = "/assets/lua_docs.md";
-    } else if (path.startsWith("/Settings/Documentation/")) {
-        String fileName = path.substring(26);
+    } else if (startsWith(path, "/Settings/Documentation/")) {
+        std::string fileName = path.substr(26);
         actualPath = "/assets/documentation/" + fileName;
     }
     
-    File file = LittleFS.open(actualPath, "r");
+    File file = LittleFS.open(actualPath.c_str(), "r");
     if (!file) {
         return "(Cannot read file: " + actualPath + ")";
     }
     
     
-    String content;
-    size_t maxSize = (path.indexOf("Documentation") >= 0) ? 4096 : 1024;
+    std::string content;
+    size_t maxSize = (path.find("Documentation") != std::string::npos) ? 4096 : 1024;
+    content.reserve(maxSize); // Pre-allocate
+    
+    char buffer[128];
     while (file.available() && content.length() < maxSize) {
-        content += (char)file.read();
+        size_t n = file.readBytes(buffer, sizeof(buffer));
+        content.append(buffer, n);
     }
     if (file.available()) {
         content += "\n...(truncated)";
@@ -215,23 +233,23 @@ static String readFileContent(const String& path) {
 }
 
 
-static String viewerTitle;
-static String viewerContent;
+static std::string viewerTitle;
+static std::string viewerContent;
 static int viewerScroll = 0;
-static std::vector<String> viewerLines;
+static std::vector<std::string> viewerLines;
 
-static void splitIntoLines(const String& text) {
+static void splitIntoLines(const std::string& text) {
     viewerLines.clear();
-    int start = 0;
+    size_t start = 0;
     int maxChars = display->width() / CHAR_WIDTH;
     
-    for (int i = 0; i <= text.length(); i++) {
+    for (size_t i = 0; i <= text.length(); i++) {
         if (i == text.length() || text[i] == '\n') {
-            String line = text.substring(start, i);
+            std::string line = text.substr(start, i - start);
             
-            while (line.length() > maxChars) {
-                viewerLines.push_back(line.substring(0, maxChars));
-                line = line.substring(maxChars);
+            while ((int)line.length() > maxChars) {
+                viewerLines.push_back(line.substr(0, maxChars));
+                line = line.substr(maxChars);
             }
             viewerLines.push_back(line);
             start = i + 1;
@@ -239,13 +257,13 @@ static void splitIntoLines(const String& text) {
     }
 }
 
-static bool viewFile(const String& path, const String& name) {
+static bool viewFile(const std::string& path, const std::string& name) {
     
-    String cleanName = name;
+    std::string cleanName = name;
     for (int i = cleanName.length() - 1; i >= 0; i--) {
         char c = cleanName[i];
         if (c < 32 || c > 126) {
-            cleanName.remove(i, 1);
+            cleanName.erase(i, 1);
         }
     }
     
@@ -354,9 +372,9 @@ AppState fileExplorerApp() {
             
             if (inSubDir) {
                 
-                int lastSlash = currentPath.lastIndexOf('/');
-                if (lastSlash > 0) {
-                    currentPath = currentPath.substring(0, lastSlash);
+                size_t lastSlash = currentPath.rfind('/');
+                if (lastSlash != std::string::npos && lastSlash > 0) {
+                    currentPath = currentPath.substr(0, lastSlash);
                 } else {
                     currentPath = rootPath;
                 }
@@ -386,7 +404,7 @@ AppState fileExplorerApp() {
                 needsRender = true;
             } else {
                 
-                String filePath = currentPath + "/" + entry.name;
+                std::string filePath = currentPath + "/" + entry.name;
                 bool exitedViaLeft = false;
                 
                 
@@ -434,9 +452,9 @@ AppState fileExplorerApp() {
     if (leftJustPressed) {
         
         if (currentPath != rootPath) {
-            int lastSlash = currentPath.lastIndexOf('/');
-            if (lastSlash > 0) {
-                currentPath = currentPath.substring(0, lastSlash);
+            size_t lastSlash = currentPath.rfind('/');
+            if (lastSlash != std::string::npos && lastSlash > 0) {
+                currentPath = currentPath.substr(0, lastSlash);
             } else {
                 currentPath = rootPath;
             }
@@ -473,4 +491,3 @@ AppState fileExplorerApp() {
     
     return AppState::RUNNING;
 }
-

@@ -2,7 +2,8 @@
 #include "utils.h"
 #include "controls.h"
 #include <FlipperDisplay.h>
-
+#include <string>
+#include <vector>
 
 extern FlipperDisplay* display;
 
@@ -11,10 +12,7 @@ static std::vector<CppAppInfo> cppApps;
 
 
 static volatile bool exitRequested = false;
-static String currentCppAppName;
-
-
-
+static std::string currentCppAppName;
 
 
 namespace CppApp {
@@ -163,9 +161,6 @@ namespace CppApp {
 }
 
 
-
-
-
 void registerCppApp(const char* name, const char* uiPath, CppAppMain mainFunc) {
     CppAppInfo info;
     info.name = name;
@@ -249,7 +244,7 @@ AppState runCppAppByPath(const char* uiPath) {
     }
     
     Serial.print(F("Running C++ app: "));
-    Serial.print(app->name);
+    Serial.print(app->name.c_str());
     Serial.print(F(" from "));
     Serial.println(uiPath);
     
@@ -263,14 +258,22 @@ AppState runCppAppByPath(const char* uiPath) {
     return AppState::RUNNING;
 }
 
+#if __has_include("security_config.h")
+    #include "security_config.h"
+#else
+    #define ENABLE_BLE 0
+#endif
+
 void initCppApps() {
     
     registerDemoApps();
     registerWifiApps();
     registerIRApps();
+#if ENABLE_BLE
+    registerBLEApps();
+#endif
     
     Serial.println(F("C++ app system initialized"));
     Serial.print(F("Registered apps: "));
     Serial.println(cppApps.size());
 }
-

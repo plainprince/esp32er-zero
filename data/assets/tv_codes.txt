@@ -125,3 +125,28 @@ NEC:DEFAULT:8:0x00FF:0x00E8:32
 NEC:DEFAULT:9:0x00FF:0x00E9:32
 NEC:DEFAULT:0:0x00FF:0x00EA:32
 
+# Promethean Smartboards (Common Projector Models)
+# PRM-30/PRM-35/PRM-45 Series (Often rebadged Sanyo/Epson/NEC)
+# Try standard NEC Protocol
+NEC:Promethean:Power:0x5246:0x22:32
+NEC:Promethean:Menu:0x5246:0x1C:32
+NEC:Promethean:Input:0x5246:0x20:32
+NEC:Promethean:Mute:0x5246:0x34:32
+NEC:Promethean:Vol+:0x5246:0x32:32
+NEC:Promethean:Vol-:0x5246:0x33:32
+NEC:Promethean:Freeze:0x5246:0x31:32
+
+# Promethean Alternate (Sanyo-like)
+NEC:PrometheanAlt:Power:0xCF30:0x11:32
+NEC:PrometheanAlt:Input:0xCF30:0x31:32
+
+# Epson Projectors (Common in classrooms)
+# NEC Protocol, Address 0x8355
+NEC:Epson:Power:0x8355:0x38:32
+NEC:Epson:Menu:0x8355:0x28:32
+NEC:Epson:Input:0x8355:0x98:32
+NEC:Epson:Mute:0x8355:0x68:32
+NEC:Epson:Vol+:0x8355:0x58:32
+NEC:Epson:Vol-:0x8355:0x48:32
+NEC:Epson:Freeze:0x8355:0x88:32
+

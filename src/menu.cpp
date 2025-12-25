@@ -2,17 +2,18 @@
 #include "utils.h"
 #include "app_runner.h"
 #include <FlipperDisplay.h>
-
+#include <string>
+#include <vector>
 
 int selectedIndex = 0;
-String currentPath = "/";
+std::string currentPath = "/";
 bool menuNeedsRedraw = true;
 
 
-std::vector<FSEntry*> currentEntries;
+std::vector<FSEntry> currentEntries;
 
 
-static String lastRenderedPath = "";
+static std::string lastRenderedPath = "";
 static int lastSelectedIndex = -1;
 
 void initMenu() {
@@ -24,7 +25,7 @@ void initMenu() {
     currentEntries.clear();
 }
 
-void initMenuFromString(const String& fileData) {
+void initMenuFromString(const std::string& fileData) {
     initFileSystem();
     initIcons();
     loadFromString(fileData);
@@ -109,7 +110,7 @@ void renderMenu(bool forceRedraw) {
             continue;
         }
         
-        FSEntry* entry = currentEntries[i];
+        const FSEntry& entry = currentEntries[i];
         bool isSelected = (selectedIndex == actualIndex);
         
         
@@ -118,10 +119,10 @@ void renderMenu(bool forceRedraw) {
         }
         
         
-        const Icon* icon = getIcon(entry->iconId.c_str());
+        const Icon* icon = getIcon(entry.iconId.c_str());
         if (!icon) {
             
-            switch (entry->type) {
+            switch (entry.type) {
                 case EntryType::FOLDER:
                     icon = getFolderIcon();
                     break;
@@ -149,9 +150,9 @@ void renderMenu(bool forceRedraw) {
         
         int availableWidth = display->width() - cursorX;
         int maxChars = availableWidth / CHAR_WIDTH;
-        String name = entry->name;
+        std::string name = entry.name;
         if ((int)name.length() > maxChars && maxChars > 3) {
-            name = name.substring(0, maxChars - 3) + "...";
+            name = name.substr(0, maxChars - 3) + "...";
         }
         display->print(name.c_str());
         
@@ -190,6 +191,17 @@ void renderMenu(bool forceRedraw) {
     lastSelectedIndex = selectedIndex;
 }
 
+// Helper for string replacement
+static void stringRemove(std::string& str, size_t pos, size_t len) {
+    if (pos < str.length()) {
+        str.erase(pos, len);
+    }
+}
+
+static bool startsWith(const std::string& str, const std::string& prefix) {
+    return str.rfind(prefix, 0) == 0;
+}
+
 void handleMenuSelection() {
     int totalItems = currentEntries.size();
     bool hasBackEntry = (currentPath != "/");
@@ -210,16 +222,24 @@ void handleMenuSelection() {
         return;
     }
     
-    FSEntry* entry = currentEntries[entryIndex];
+    const FSEntry& entry = currentEntries[entryIndex];
     
-    switch (entry->type) {
+    switch (entry.type) {
         case EntryType::FOLDER:
-            navigateTo(entry->path + "/");
+            // Use the stored targetPath if available (for dynamic folders), otherwise use UI path
+            if (!entry.targetPath.empty()) {
+                // For dynamic folders, we need to register a temporary mount or handle navigation differently
+                // For now, use the UI path which should work for nested navigation
+                navigateTo(entry.path + "/");
+            } else {
+                navigateTo(entry.path + "/");
+            }
             break;
             
         case EntryType::APP:
-            if (entry->callback) {
-                entry->callback(entry->path.c_str(), entry->name.c_str());
+            if (entry.callback) {
+                const char* pathArg = entry.targetPath.empty() ? entry.path.c_str() : entry.targetPath.c_str();
+                entry.callback(pathArg, entry.name.c_str());
                 invalidateMenu(); 
             }
             break;
@@ -227,26 +247,26 @@ void handleMenuSelection() {
         case EntryType::FILE:
             
             {
-                String filePath = entry->path;
-                String fileName = entry->name;
+                std::string filePath = entry.path;
+                std::string fileName = entry.name;
                 
                 
                 for (int i = fileName.length() - 1; i >= 0; i--) {
                     char c = fileName[i];
                     if (c < 32 || c > 126) {
-                        fileName.remove(i, 1);
+                        fileName.erase(i, 1);
                     }
                 }
                 
                 
-                String actualPath = filePath;
+                std::string actualPath = filePath;
                 if (filePath == "/Settings/Documentation/About") {
                     actualPath = "/assets/about.txt";
                 } else if (filePath == "/Settings/Documentation/Lua Docs") {
                     actualPath = "/assets/lua_docs.md";
-                } else if (filePath.startsWith("/Settings/Documentation/")) {
-                    String fileName = filePath.substring(26);
-                    actualPath = "/assets/documentation/" + fileName;
+                } else if (startsWith(filePath, "/Settings/Documentation/")) {
+                    std::string fName = filePath.substr(26);
+                    actualPath = "/assets/documentation/" + fName;
                 }
                 
                 
@@ -285,12 +305,14 @@ void menuDown() {
     menuNeedsRedraw = true;
 }
 
-void navigateTo(const String& path) {
+void navigateTo(const std::string& path) {
     currentPath = path;
-    if (!currentPath.endsWith("/")) {
+    if (currentPath.back() != '/') { // std::string::back() requires C++11
         currentPath += "/";
     }
-    if (!currentPath.startsWith("/")) {
+    // Alternatively check size > 0
+    
+    if (currentPath.rfind("/", 0) != 0) { // startsWith
         currentPath = "/" + currentPath;
     }
     selectedIndex = 0;
@@ -320,7 +342,7 @@ FSEntry* getSelectedEntry() {
         return nullptr;
     }
     
-    return currentEntries[entryIndex];
+    return &currentEntries[entryIndex];
 }
 
 int getVisibleItemCount() {

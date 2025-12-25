@@ -2,6 +2,8 @@
 #include "cpp_app.h"
 #include "ir_remote.h"
 #include "keyboard.h"
+#include <vector>
+#include <string>
 
 #if __has_include("security_config.h")
     #include "security_config.h"
@@ -35,8 +37,8 @@ CPP_APP(ir_remote) {
     unsigned long lastRepeatTime = 0;
     const unsigned long REPEAT_INTERVAL = 110;
     
-    String currentFolder = "";
-    String currentCodeName = "";
+    char currentFolder[64] = "";
+    char currentCodeName[64] = "";
     const TVCode* currentCode = nullptr;
     std::vector<const TVCode*> codes;  // Cached codes list for current folder
     
@@ -51,32 +53,40 @@ CPP_APP(ir_remote) {
     // Helper: Check if current protocol is Custom
     auto isCustomProtocol = [&]() -> bool {
         if (protocolIndex >= numProtocols || !protocols[protocolIndex]) return false;
-        return String(protocols[protocolIndex]).equalsIgnoreCase("Custom");
+        return strcasecmp_eq(protocols[protocolIndex], "Custom");
     };
     
+    // Store string objects for custom folders to keep pointers valid
+    static std::vector<std::string> customFolderStrings;
+    
     // Helper: Get brands for current protocol
-    auto getBrands = [&]() -> std::vector<String> {
-        std::vector<String> brands;
+    auto getBrands = [&]() -> std::vector<const char*> {
+        std::vector<const char*> brands;
         if (protocolIndex >= numProtocols || !protocols[protocolIndex]) return brands;
         
-        String protoName = String(protocols[protocolIndex]);
+        const char* protoName = protocols[protocolIndex];
         
-        if (protoName.equalsIgnoreCase("Custom")) {
-            return getCustomFolders();
+        if (strcasecmp_eq(protoName, "Custom")) {
+            // Store String objects persistently to keep pointers valid
+            customFolderStrings = getCustomFolders();
+            for (const auto& f : customFolderStrings) {
+                brands.push_back(f.c_str());
+            }
+            return brands;
         }
         
-        // Regular protocols
+        // Regular protocols - point directly to persistent char arrays in TVCode structs
         for (int i = 0; i < numCodes; i++) {
-            if (allCodes[i].protocol.equalsIgnoreCase(protoName)) {
+            if (strcasecmp_eq(allCodes[i].protocol, protoName)) {
                 bool found = false;
                 for (const auto& b : brands) {
-                    if (b.equalsIgnoreCase(allCodes[i].brand)) {
+                    if (strcasecmp_eq(b, allCodes[i].brand)) {
                         found = true;
                         break;
                     }
                 }
                 if (!found) {
-                    brands.push_back(allCodes[i].brand);
+                    brands.push_back(allCodes[i].brand); // Point directly to char array
                 }
             }
         }
@@ -84,17 +94,17 @@ CPP_APP(ir_remote) {
     };
     
     // Helper: Get codes for brand
-    auto getCodesForBrand = [&](const String& brand) -> std::vector<const TVCode*> {
+    auto getCodesForBrand = [&](const char* brand) -> std::vector<const TVCode*> {
         std::vector<const TVCode*> codes;
-        String protoName = String(protocols[protocolIndex]);
+        const char* protoName = protocols[protocolIndex];
         
-        if (protoName.equalsIgnoreCase("Custom")) {
-            return getCustomCodes(brand.c_str());
+        if (strcasecmp_eq(protoName, "Custom")) {
+            return getCustomCodes(brand);
         }
         
         for (int i = 0; i < numCodes; i++) {
-            if (allCodes[i].protocol.equalsIgnoreCase(protoName) &&
-                allCodes[i].brand.equalsIgnoreCase(brand)) {
+            if (strcasecmp_eq(allCodes[i].protocol, protoName) &&
+                strcasecmp_eq(allCodes[i].brand, brand)) {
                 codes.push_back(&allCodes[i]);
             }
         }
@@ -123,7 +133,7 @@ CPP_APP(ir_remote) {
             
         } else if (navLevel == BRAND) {
             // Brand/Folder selection
-            std::vector<String> brands = getBrands();
+            std::vector<const char*> brands = getBrands();
             bool isCustom = isCustomProtocol();
             int maxIndex = brands.size() + (isCustom ? 1 : 0);
             
@@ -133,9 +143,9 @@ CPP_APP(ir_remote) {
             
             for (int i = 0; i < (int)brands.size() && i < 5; i++) {
                 if (i == brandIndex) {
-                    snprintf(buf, sizeof(buf), "> %s", brands[i].c_str());
+                    snprintf(buf, sizeof(buf), "> %s", brands[i]);
                 } else {
-                    snprintf(buf, sizeof(buf), "  %s", brands[i].c_str());
+                    snprintf(buf, sizeof(buf), "  %s", brands[i]);
                 }
                 CppApp::println(buf);
             }
@@ -169,9 +179,9 @@ CPP_APP(ir_remote) {
             
             for (int i = 0; i < (int)codes.size() && i < 5; i++) {
                 if (i == codeIndex) {
-                    snprintf(buf, sizeof(buf), "> %s", codes[i]->button.c_str());
+                    snprintf(buf, sizeof(buf), "> %s", codes[i]->button);
                 } else {
-                    snprintf(buf, sizeof(buf), "  %s", codes[i]->button.c_str());
+                    snprintf(buf, sizeof(buf), "  %s", codes[i]->button);
                 }
                 CppApp::println(buf);
             }
@@ -204,9 +214,9 @@ CPP_APP(ir_remote) {
             CppApp::println("Left: back");
             
         } else if (navLevel == CODE_ACTIONS) {
-            // Inside a code - show Run and Delete
+            // Inside a code - show Run, Delete, Show info
             CppApp::println("Actions:");
-            CppApp::println(currentCodeName.c_str());
+            CppApp::println(currentCodeName);
             CppApp::println("");
             
             if (actionIndex == 0) {
@@ -219,6 +229,12 @@ CPP_APP(ir_remote) {
                 CppApp::println("> Delete");
             } else {
                 CppApp::println("  Delete");
+            }
+            
+            if (actionIndex == 2) {
+                CppApp::println("> Show info");
+            } else {
+                CppApp::println("  Show info");
             }
             
             CppApp::println("");
@@ -274,7 +290,7 @@ CPP_APP(ir_remote) {
                 render();
             }
             if (rightPressed) {
-                std::vector<String> brands = getBrands();
+                std::vector<const char*> brands = getBrands();
                 if (brands.size() > 0 || isCustomProtocol()) {
                     navLevel = BRAND;
                     brandIndex = 0;
@@ -283,7 +299,7 @@ CPP_APP(ir_remote) {
             }
             
         } else if (navLevel == BRAND) {
-            std::vector<String> brands = getBrands();
+            std::vector<const char*> brands = getBrands();
             bool isCustom = isCustomProtocol();
             int maxIndex = brands.size() + (isCustom ? 1 : 0);
             
@@ -300,17 +316,28 @@ CPP_APP(ir_remote) {
                     // Create new folder
                     char folderName[64] = "";
                     if (showKeyboard("Folder name:", folderName, sizeof(folderName))) {
-                        String cleanName = String(folderName);
-                        int newlinePos = cleanName.indexOf('\n');
-                        if (newlinePos >= 0) cleanName = cleanName.substring(0, newlinePos);
-                        cleanName.trim();
+                        // Clean folder name: remove newline and trim whitespace
+                        char cleanName[64] = "";
+                        size_t len = strlen(folderName);
+                        size_t cleanLen = 0;
+                        for (size_t i = 0; i < len && i < sizeof(cleanName) - 1; i++) {
+                            if (folderName[i] == '\n' || folderName[i] == '\r') break;
+                            if (folderName[i] != ' ' || cleanLen > 0) { // Skip leading spaces
+                                cleanName[cleanLen++] = folderName[i];
+                            }
+                        }
+                        // Trim trailing spaces
+                        while (cleanLen > 0 && cleanName[cleanLen - 1] == ' ') {
+                            cleanLen--;
+                        }
+                        cleanName[cleanLen] = '\0';
                         
-                        if (cleanName.length() > 0) {
-                            if (createCustomFolder(cleanName.c_str())) {
+                        if (cleanLen > 0) {
+                            if (createCustomFolder(cleanName)) {
                                 // Reload brands and select the new folder
                                 brands = getBrands();
                                 for (size_t i = 0; i < brands.size(); i++) {
-                                    if (brands[i].equalsIgnoreCase(cleanName)) {
+                                    if (strcasecmp_eq(brands[i], cleanName)) {
                                         brandIndex = i;
                                         break;
                                     }
@@ -320,7 +347,8 @@ CPP_APP(ir_remote) {
                     }
                     render();
                 } else if (brandIndex < (int)brands.size()) {
-                    currentFolder = brands[brandIndex];
+                    strncpy(currentFolder, brands[brandIndex], sizeof(currentFolder) - 1);
+                    currentFolder[sizeof(currentFolder) - 1] = '\0';
                     navLevel = CODE_LIST;
                     codeIndex = 0;
                     render();
@@ -359,13 +387,24 @@ CPP_APP(ir_remote) {
                         if (scanIRCode(10000, &scannedCode, protocolName, sizeof(protocolName))) {
                             char buttonName[64] = "";
                             if (showKeyboard("Button name:", buttonName, sizeof(buttonName))) {
-                                String cleanName = String(buttonName);
-                                int newlinePos = cleanName.indexOf('\n');
-                                if (newlinePos >= 0) cleanName = cleanName.substring(0, newlinePos);
-                                cleanName.trim();
+                                // Clean button name: remove newline and trim whitespace
+                                char cleanName[64] = "";
+                                size_t len = strlen(buttonName);
+                                size_t cleanLen = 0;
+                                for (size_t i = 0; i < len && i < sizeof(cleanName) - 1; i++) {
+                                    if (buttonName[i] == '\n' || buttonName[i] == '\r') break;
+                                    if (buttonName[i] != ' ' || cleanLen > 0) { // Skip leading spaces
+                                        cleanName[cleanLen++] = buttonName[i];
+                                    }
+                                }
+                                // Trim trailing spaces
+                                while (cleanLen > 0 && cleanName[cleanLen - 1] == ' ') {
+                                    cleanLen--;
+                                }
+                                cleanName[cleanLen] = '\0';
                                 
-                                if (cleanName.length() > 0) {
-                                    if (saveCustomCode(currentFolder.c_str(), cleanName.c_str(), &scannedCode)) {
+                                if (cleanLen > 0) {
+                                    if (saveCustomCode(currentFolder, cleanName, &scannedCode)) {
                                         // Successfully saved - refresh codes list and select the new code
                                         codes = getCodesForBrand(currentFolder);
                                         codeIndex = codes.size() - 1;  // Select the newly added code
@@ -385,14 +424,15 @@ CPP_APP(ir_remote) {
                         
                     } else if (codeIndex == (int)codes.size() + 1) {
                         // Delete folder
-                        deleteCustomFolder(currentFolder.c_str());
+                        deleteCustomFolder(currentFolder);
                         navLevel = BRAND;
                         codeIndex = 0;
                         render();
                         
                     } else if (codeIndex < (int)codes.size()) {
                         // Enter code actions
-                        currentCodeName = codes[codeIndex]->button;
+                        strncpy(currentCodeName, codes[codeIndex]->button, sizeof(currentCodeName) - 1);
+                        currentCodeName[sizeof(currentCodeName) - 1] = '\0';
                         currentCode = codes[codeIndex];
                         navLevel = CODE_ACTIONS;
                         actionIndex = 0;
@@ -420,11 +460,11 @@ CPP_APP(ir_remote) {
             
         } else if (navLevel == CODE_ACTIONS) {
             if (upPressed) {
-                actionIndex = (actionIndex - 1 + 2) % 2;
+                actionIndex = (actionIndex - 1 + 3) % 3;
                 render();
             }
             if (downPressed) {
-                actionIndex = (actionIndex + 1) % 2;
+                actionIndex = (actionIndex + 1) % 3;
                 render();
             }
             
@@ -445,10 +485,57 @@ CPP_APP(ir_remote) {
                 }
             } else if (actionIndex == 1 && btnJustPressed) {
                 // Delete
-                deleteCustomCode(currentFolder.c_str(), currentCodeName.c_str());
+                deleteCustomCode(currentFolder, currentCodeName);
                 navLevel = CODE_LIST;
                 codeIndex = 0;
                 actionIndex = 0;
+                render();
+            } else if (actionIndex == 2 && btnJustPressed) {
+                // Show info - display full details
+                CppApp::clear();
+                
+                // Code Name
+                CppApp::println(currentCodeName);
+                
+                if (currentCode) {
+                    char buf[64];
+                    // Combine info to save vertical space
+                    snprintf(buf, sizeof(buf), "P:%s  %dbits", currentCode->protocol, currentCode->nbits);
+                    CppApp::println(buf);
+                    
+                    snprintf(buf, sizeof(buf), "B:%s", currentCode->brand);
+                    CppApp::println(buf);
+                    
+                    // Use explicit casting and format for 32-bit/64-bit values
+                    // Using %04llX to force at least 4 digits (pads with zeros)
+                    snprintf(buf, sizeof(buf), "A:0x%04llX", (unsigned long long)currentCode->address);
+                    CppApp::println(buf);
+                    
+                    snprintf(buf, sizeof(buf), "C:0x%04llX", (unsigned long long)currentCode->command);
+                    CppApp::println(buf);
+                }
+                
+                // Empty line for spacing
+                CppApp::println("");
+                CppApp::println("Click to exit");
+                
+                CppApp::refresh();
+                
+                // Wait for button release first
+                while (CppApp::buttonRaw()) {
+                    delay(10);
+                }
+                
+                // Now wait for any button press
+                while (!CppApp::shouldExit()) {
+                    if (CppApp::buttonRaw() || CppApp::up() || CppApp::down() || 
+                        CppApp::left() || CppApp::right()) {
+                        delay(100); // Debounce
+                        break;
+                    }
+                    delay(10);
+                }
+                
                 render();
             }
         }
@@ -530,6 +617,6 @@ void registerIRApps() {
 #if ENABLE_ADVANCED_IR
     registerCppApp("Universal Remote", "/Applications/Infrared/Universal Remote", cppapp_ir_remote);
     registerCppApp("IR Test", "/Applications/Infrared/IR Test", cppapp_ir_test);
+    // TV-B-Gone is now implemented in Lua
 #endif
 }
-

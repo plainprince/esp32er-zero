@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 #include "app_runner.h"
+#include <string>
 
 
 
@@ -10,10 +11,9 @@
 void setFileExplorerRoot(const char* path);
 
 
-String getFileExplorerPath();
+std::string getFileExplorerPath();
 
 
 AppState fileExplorerApp();
 
 #endif 
-
